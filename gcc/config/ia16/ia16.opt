@@ -1,0 +1,119 @@
+; Options for the ia16 (16-bit x86) backend.
+; Copyright (C) 2026 Free Software Foundation, Inc.
+;
+; This file is part of GCC.
+;
+; GCC is free software; you can redistribute it and/or modify it under
+; the terms of the GNU General Public License as published by the Free
+; Software Foundation; either version 3, or (at your option) any later
+; version.
+;
+; GCC is distributed in the hope that it will be useful, but WITHOUT ANY
+; WARRANTY; without even the implied warranty of MERCHANTABILITY or
+; FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+; for more details.
+;
+; You should have received a copy of the GNU General Public License
+; along with GCC; see the file COPYING3.  If not see
+; <http://www.gnu.org/licenses/>.
+
+HeaderInclude
+config/ia16/ia16-opts.h
+
+; CPU type selection.
+mcpu=
+Target RejectNegative Joined Var(ia16_arch) Enum(ia16_cpu_types) Init(IA16_CPU_8086)
+Specify the target CPU: 8086, 80186, 80286.
+
+Enum
+Name(ia16_cpu_types) Type(enum ia16_cpu_type)
+
+EnumValue
+Enum(ia16_cpu_types) String(8086) Value(IA16_CPU_8086) Canonical
+
+EnumValue
+Enum(ia16_cpu_types) String(i8086) Value(IA16_CPU_8086)
+
+EnumValue
+Enum(ia16_cpu_types) String(80186) Value(IA16_CPU_80186) Canonical
+
+EnumValue
+Enum(ia16_cpu_types) String(i80186) Value(IA16_CPU_80186)
+
+EnumValue
+Enum(ia16_cpu_types) String(186) Value(IA16_CPU_80186)
+
+EnumValue
+Enum(ia16_cpu_types) String(80286) Value(IA16_CPU_80286) Canonical
+
+EnumValue
+Enum(ia16_cpu_types) String(i80286) Value(IA16_CPU_80286)
+
+EnumValue
+Enum(ia16_cpu_types) String(286) Value(IA16_CPU_80286)
+
+; Memory model selection.
+mcmodel=
+Target RejectNegative Joined Var(ia16_memmodel) Enum(ia16_memory_models) Init(IA16_MODEL_SMALL)
+Specify the memory model: tiny, small, medium, compact, large, huge.
+
+Enum
+Name(ia16_memory_models) Type(enum ia16_memory_model)
+
+EnumValue
+Enum(ia16_memory_models) String(tiny) Value(IA16_MODEL_TINY) Canonical
+
+EnumValue
+Enum(ia16_memory_models) String(small) Value(IA16_MODEL_SMALL) Canonical
+
+EnumValue
+Enum(ia16_memory_models) String(medium) Value(IA16_MODEL_MEDIUM) Canonical
+
+EnumValue
+Enum(ia16_memory_models) String(compact) Value(IA16_MODEL_COMPACT) Canonical
+
+EnumValue
+Enum(ia16_memory_models) String(large) Value(IA16_MODEL_LARGE) Canonical
+
+EnumValue
+Enum(ia16_memory_models) String(huge) Value(IA16_MODEL_HUGE) Canonical
+
+; Convenience options for common memory models.
+mtiny
+Target RejectNegative Alias(mcmodel=, tiny)
+Use tiny memory model (CS=DS=SS, .COM style).
+
+msmall
+Target RejectNegative Alias(mcmodel=, small)
+Use small memory model (near code, near data).
+
+mmedium
+Target RejectNegative Alias(mcmodel=, medium)
+Use medium memory model (far code, near data).
+
+mcompact
+Target RejectNegative Alias(mcmodel=, compact)
+Use compact memory model (near code, far data).
+
+mlarge
+Target RejectNegative Alias(mcmodel=, large)
+Use large memory model (far code, far data).
+
+mhuge
+Target RejectNegative Alias(mcmodel=, huge)
+Use huge memory model (far code, far data, huge pointers).
+
+; Generate code for the specified segment register usage.
+msegment-override
+Target Mask(SEGMENT_OVERRIDE)
+Enable segment override prefixes.
+
+; Use ENTER/LEAVE instructions (80186+).
+menter-leave
+Target Mask(ENTER_LEAVE)
+Use ENTER and LEAVE instructions for function prologue/epilogue (requires 80186+).
+
+; Generate stack frame even when not needed.
+mno-omit-frame-pointer
+Target RejectNegative Mask(FRAME_POINTER)
+Always generate a stack frame.
