@@ -32,6 +32,7 @@ extern unsigned int ia16_hard_regno_nregs (unsigned int, machine_mode);
 extern int ia16_register_move_cost (machine_mode, reg_class_t, reg_class_t);
 extern int ia16_memory_move_cost (machine_mode, reg_class_t, bool);
 extern bool ia16_can_eliminate (int, int);
+extern rtx ia16_split_si_half (rtx, int);
 extern void ia16_split_movsi (rtx *, rtx *);
 extern bool ia16_can_use_return_insn_p (void);
 extern poly_int64 ia16_push_rounding (poly_int64);

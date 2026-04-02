@@ -155,9 +155,9 @@ ia16_hard_regno_nregs_hook (unsigned int regno, machine_mode mode)
 unsigned int
 ia16_hard_regno_nregs (unsigned int regno, machine_mode mode)
 {
-  /* Byte registers hold one QImode value.  */
+  /* Byte registers hold one QImode value only.  */
   if (regno >= AL_REG && regno <= BL_REG)
-    return 1;
+    return GET_MODE_SIZE (mode);
 
   /* 16-bit registers: 1 reg per 16 bits.  */
   unsigned int size = GET_MODE_SIZE (mode);
@@ -233,7 +233,9 @@ ia16_modes_tieable_p (machine_mode mode1, machine_mode mode2)
 static bool
 ia16_frame_pointer_required (void)
 {
-  return TARGET_FRAME_POINTER || cfun->calls_alloca;
+  /* On 8086, SP cannot be used as a base register for addressing,
+     so we always need a frame pointer (BP) to access locals and args.  */
+  return true;
 }
 
 #undef  TARGET_FRAME_POINTER_REQUIRED
@@ -748,7 +750,7 @@ ia16_print_operand (FILE *file, rtx x, int code)
 {
   switch (code)
     {
-    case 'h':
+    case 'H':
       /* Print high byte register name.  */
       if (REG_P (x))
 	{
@@ -763,7 +765,7 @@ ia16_print_operand (FILE *file, rtx x, int code)
 	}
       break;
 
-    case 'l':
+    case 'L':
       /* Print low byte register name.  */
       if (REG_P (x))
 	{
@@ -798,7 +800,22 @@ ia16_print_operand (FILE *file, rtx x, int code)
     }
 
   if (REG_P (x))
-    fputs (reg_names[REGNO (x)], file);
+    {
+      int regno = REGNO (x);
+      /* In QImode, use byte register names for AX/DX/CX/BX.  */
+      if (GET_MODE (x) == QImode)
+	{
+	  switch (regno)
+	    {
+	    case AX_REG: fputs ("%al", file); return;
+	    case DX_REG: fputs ("%dl", file); return;
+	    case CX_REG: fputs ("%cl", file); return;
+	    case BX_REG: fputs ("%bl", file); return;
+	    default: break;
+	    }
+	}
+      fputs (reg_names[regno], file);
+    }
   else if (MEM_P (x))
     {
       ia16_print_operand_address (file, GET_MODE (x), XEXP (x, 0));
@@ -894,6 +911,35 @@ ia16_output_move_insn (rtx *operands, machine_mode mode)
    original dest/src; RESULT[0..3] are filled with lo_dest, lo_src,
    hi_dest, hi_src.  */
 
+rtx
+ia16_split_si_half (rtx x, int high)
+{
+  int offset = high ? 2 : 0;
+
+  if (MEM_P (x))
+    return adjust_address (x, HImode, offset);
+
+  if (CONST_INT_P (x))
+    {
+      HOST_WIDE_INT val = INTVAL (x);
+      if (high)
+	return GEN_INT ((val >> 16) & 0xffff);
+      else
+	return GEN_INT (val & 0xffff);
+    }
+
+  if (CONST_DOUBLE_P (x) || GET_CODE (x) == CONST)
+    {
+      if (high)
+	return gen_highpart (HImode, x);
+      else
+	return gen_lowpart (HImode, x);
+    }
+
+  /* Register: use subreg.  */
+  return simplify_gen_subreg (HImode, x, SImode, offset);
+}
+
 void
 ia16_split_movsi (rtx *operands, rtx *result)
 {
@@ -901,11 +947,11 @@ ia16_split_movsi (rtx *operands, rtx *result)
   rtx src = operands[1];
 
   /* Low half.  */
-  result[0] = gen_lowpart (HImode, dest);
-  result[1] = gen_lowpart (HImode, src);
+  result[0] = ia16_split_si_half (dest, 0);
+  result[1] = ia16_split_si_half (src, 0);
   /* High half.  */
-  result[2] = gen_highpart (HImode, dest);
-  result[3] = gen_highpart (HImode, src);
+  result[2] = ia16_split_si_half (dest, 1);
+  result[3] = ia16_split_si_half (src, 1);
 }
 
 /* Return true if the current function can use a simple RET.

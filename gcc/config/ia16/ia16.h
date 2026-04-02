@@ -431,11 +431,10 @@ extern void ia16_init_cumulative_args (CUMULATIVE_ARGS *, tree, rtx, tree, int);
 
 #define ACCUMULATE_OUTGOING_ARGS 0
 
-/* We use the "cdecl" convention: caller pops args from the stack.  */
+/* Use push instructions for argument passing.  The pushhi1 expander
+   forces immediates into registers on 8086 (no push-immediate).  */
 #define PUSH_ARGS	1
 #define PUSH_ROUNDING(BYTES) ia16_push_rounding (BYTES)
-
-/* The 8086 can only push 16-bit values.  */
 #define PUSH_ARGS_REVERSED 1
 
 /* --------------------------------------------------------------------------

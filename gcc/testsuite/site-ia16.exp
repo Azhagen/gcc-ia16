@@ -1,0 +1,3 @@
+# DejaGnu site config for ia16-elf testing.
+# Point boards_dir to our custom board descriptions.
+set boards_dir "[file dirname [info script]]/boards"
