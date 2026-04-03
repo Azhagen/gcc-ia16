@@ -242,9 +242,10 @@ enum reg_class
   ADREG,	/* AX + DX (for 32-bit return).  */
   SIREG,	/* SI only (string ops source).  */
   DIREG,	/* DI only (string ops dest).  */
-  INDEX_REGS,	/* BX, SI, DI (for addressing).  */
-  BASE_REGS,	/* BX, SI, DI, BP, SP (valid base for addressing).  */
-  QI_REGS,	/* AX, BX, CX, DX (have byte sub-regs).  */
+  INDEX_REGS,	/* SI, DI (index registers for addressing).  */
+  BASE_INDEX_REGS, /* BX, BP (base when index is present).  */
+  BASE_REGS,	/* BX, SI, DI, BP (valid base for addressing).  */
+  QI_REGS,	/* AX, DX, CX, BX, AL, DL, CL, BL (byte-capable).  */
   GENERAL_REGS,	/* AX, BX, CX, DX, SI, DI, BP.  */
   SEG_REGS,	/* ES.  */
   ALL_REGS,
@@ -264,6 +265,7 @@ enum reg_class
   "SIREG",					\
   "DIREG",					\
   "INDEX_REGS",				\
+  "BASE_INDEX_REGS",				\
   "BASE_REGS",					\
   "QI_REGS",					\
   "GENERAL_REGS",				\
@@ -283,16 +285,31 @@ enum reg_class
   { 0x0003 },	/* ADREG       - AX, DX */				\
   { 0x0010 },	/* SIREG       - SI */					\
   { 0x0020 },	/* DIREG       - DI */					\
-  { 0x0038 },	/* INDEX_REGS  - BX, SI, DI */				\
+  { 0x0030 },	/* INDEX_REGS  - SI, DI */				\
+  { 0x0048 },	/* BASE_INDEX_REGS - BX, BP */				\
   { 0x0078 },	/* BASE_REGS   - BX, SI, DI, BP */			\
-  { 0x000F },	/* QI_REGS     - AX, DX, CX, BX */			\
+  { 0x780F },	/* QI_REGS     - AX, DX, CX, BX, AL, DL, CL, BL */	\
   { 0x00FF },	/* GENERAL_REGS - AX, DX, CX, BX, SI, DI, BP, SP */	\
   { 0x0100 },	/* SEG_REGS    - ES */					\
   { 0x7FFF }	/* ALL_REGS    */					\
 }
 
 #define GENERAL_REGS	GENERAL_REGS
-#define BASE_REG_CLASS	BASE_REGS
+
+/* When an index register is present (index_code == REG), the base
+   must be BX or BP on 8086.  When no index is present, any of
+   BX, SI, DI, BP can be a base.  */
+#define MODE_CODE_BASE_REG_CLASS(MODE, AS, OUTER, INDEX)	\
+  ((INDEX) == REG ? BASE_INDEX_REGS : BASE_REGS)
+
+/* Validate a specific register number as base, depending on whether
+   an index register is present.  */
+#define REGNO_MODE_CODE_OK_FOR_BASE_P(REGNO, MODE, AS, OUTER, INDEX)	\
+  (((INDEX) == REG)							\
+   ? ((REGNO) == BX_REG || (REGNO) == BP_REG				\
+      || (unsigned)(REGNO) >= FIRST_PSEUDO_REGISTER)			\
+   : REGNO_OK_FOR_BASE_P (REGNO))
+
 #define INDEX_REG_CLASS	INDEX_REGS
 
 #define STACK_POINTER_REGNUM	SP_REG
@@ -332,10 +349,11 @@ enum reg_class
 	|| (REGNO) == BP_REG))					\
    || (unsigned)(REGNO) >= FIRST_PSEUDO_REGISTER)
 
+/* On 8086, only SI and DI can be index registers (used with
+   BX or BP as base in base+index addressing).  */
 #define REGNO_OK_FOR_INDEX_P(REGNO)				\
   (((unsigned)(REGNO) < FIRST_PSEUDO_REGISTER			\
-    && ((REGNO) == BX_REG					\
-	|| (REGNO) == SI_REG					\
+    && ((REGNO) == SI_REG					\
 	|| (REGNO) == DI_REG))					\
    || (unsigned)(REGNO) >= FIRST_PSEUDO_REGISTER)
 
@@ -420,6 +438,12 @@ extern void ia16_init_cumulative_args (CUMULATIVE_ARGS *, tree, rtx, tree, int);
   while (0)
 
 #define JUMP_TABLES_IN_TEXT_SECTION 1
+
+#define ASM_OUTPUT_ADDR_VEC_ELT(FILE, VALUE) \
+  fprintf (FILE, "\t.word .L%d\n", VALUE)
+
+#define ASM_OUTPUT_ADDR_DIFF_ELT(FILE, BODY, VALUE, REL) \
+  fprintf (FILE, "\t.word .L%d-.L%d\n", VALUE, REL)
 
 #undef  DWARF2_ADDR_SIZE
 #define DWARF2_ADDR_SIZE	2

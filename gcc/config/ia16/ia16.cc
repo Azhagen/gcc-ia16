@@ -84,9 +84,13 @@ ia16_compute_frame_info (void)
   m->local_vars_size = get_frame_size ();
   m->uses_frame_pointer = frame_pointer_needed;
 
-  /* Count callee-saved registers that need saving.  */
+  /* Count callee-saved registers that need saving.
+     Skip byte sub-registers (AL..BL) — they share storage
+     with their parent word register.  */
   for (int i = 0; i < FIRST_PSEUDO_REGISTER; i++)
     {
+      if (i >= AL_REG && i <= BL_REG)
+	continue;
       if (df_regs_ever_live_p (i)
 	  && !call_used_or_fixed_reg_p (i)
 	  && !fixed_regs[i])
@@ -129,7 +133,7 @@ ia16_regno_reg_class (int regno)
     case AX_REG: return AREG;
     case DX_REG: return DREG;
     case CX_REG: return CREG;
-    case BX_REG: return INDEX_REGS;
+    case BX_REG: return BASE_REGS;
     case SI_REG: return SIREG;
     case DI_REG: return DIREG;
     case BP_REG: return BASE_REGS;
@@ -317,59 +321,57 @@ ia16_initial_elimination_offset (int from, int to)
    Index can be SI, DI (only with BX or BP as base).
    Displacement can be any constant.  */
 
+/* Decompose an address RTX into base, index, and displacement
+   components.  Normalizes the base/index order for 8086 addressing:
+   base must be BX/BP, index must be SI/DI.
+   Returns true if the address could be decomposed.  */
+
 static bool
-ia16_legitimate_address_p (machine_mode mode ATTRIBUTE_UNUSED,
-			   rtx addr, bool strict,
-			   code_helper ch ATTRIBUTE_UNUSED)
+ia16_decompose_address (rtx addr, rtx *base_out, rtx *index_out,
+			rtx *disp_out)
 {
   rtx base = NULL_RTX;
   rtx index = NULL_RTX;
   rtx disp = NULL_RTX;
 
-  /* Direct address (symbolic or constant).  */
   if (CONSTANT_P (addr))
-    return true;
-
-  /* Single register.  */
-  if (REG_P (addr))
     {
-      int regno = REGNO (addr);
-      if (!strict || regno < FIRST_PSEUDO_REGISTER)
-	return REGNO_OK_FOR_BASE_P (regno);
-      return true; /* Pseudo will be allocated to a valid base.  */
+      disp = addr;
     }
-
-  if (GET_CODE (addr) != PLUS)
-    return false;
-
-  rtx op0 = XEXP (addr, 0);
-  rtx op1 = XEXP (addr, 1);
-
-  /* REG + CONST.  */
-  if (REG_P (op0) && CONSTANT_P (op1))
+  else if (REG_P (addr))
     {
-      base = op0;
-      disp = op1;
+      base = addr;
     }
-  else if (REG_P (op1) && CONSTANT_P (op0))
+  else if (GET_CODE (addr) == PLUS)
     {
-      base = op1;
-      disp = op0;
-    }
-  /* REG + REG.  */
-  else if (REG_P (op0) && REG_P (op1))
-    {
-      base = op0;
-      index = op1;
-    }
-  /* (REG + REG) + CONST or REG + (REG + CONST).  */
-  else if (GET_CODE (op0) == PLUS && CONSTANT_P (op1))
-    {
-      if (REG_P (XEXP (op0, 0)) && REG_P (XEXP (op0, 1)))
+      rtx op0 = XEXP (addr, 0);
+      rtx op1 = XEXP (addr, 1);
+
+      if (REG_P (op0) && CONSTANT_P (op1))
 	{
-	  base = XEXP (op0, 0);
-	  index = XEXP (op0, 1);
+	  base = op0;
 	  disp = op1;
+	}
+      else if (REG_P (op1) && CONSTANT_P (op0))
+	{
+	  base = op1;
+	  disp = op0;
+	}
+      else if (REG_P (op0) && REG_P (op1))
+	{
+	  base = op0;
+	  index = op1;
+	}
+      else if (GET_CODE (op0) == PLUS && CONSTANT_P (op1))
+	{
+	  if (REG_P (XEXP (op0, 0)) && REG_P (XEXP (op0, 1)))
+	    {
+	      base = XEXP (op0, 0);
+	      index = XEXP (op0, 1);
+	      disp = op1;
+	    }
+	  else
+	    return false;
 	}
       else
 	return false;
@@ -377,25 +379,73 @@ ia16_legitimate_address_p (machine_mode mode ATTRIBUTE_UNUSED,
   else
     return false;
 
-  /* Validate base register.  */
+  /* Normalize base/index order for 8086.  On 8086, only SI and DI
+     can be index registers.  If the current assignment has a non-index
+     register as index, swap base and index.  */
+  if (base && index
+      && (unsigned) REGNO (base) < FIRST_PSEUDO_REGISTER
+      && (unsigned) REGNO (index) < FIRST_PSEUDO_REGISTER
+      && !REGNO_OK_FOR_INDEX_P (REGNO (index)))
+    {
+      rtx tmp = base;
+      base = index;
+      index = tmp;
+    }
+
+  *base_out = base;
+  *index_out = index;
+  *disp_out = disp;
+  return true;
+}
+
+static bool
+ia16_legitimate_address_p (machine_mode mode ATTRIBUTE_UNUSED,
+			   rtx addr, bool strict,
+			   code_helper ch ATTRIBUTE_UNUSED)
+{
+  rtx base, index, disp;
+
+  if (!ia16_decompose_address (addr, &base, &index, &disp))
+    return false;
+
+  /* Direct address (constant only, no registers).  */
+  if (!base && !index)
+    return true;
+
+  /* Validate base register.  Reject hard registers that are not valid
+     8086 base registers (BX, SI, DI, BP) in both strict and non-strict
+     modes, so GCC allocates base registers correctly from the start.  */
   if (base)
     {
       int regno = REGNO (base);
-      if (strict && regno >= FIRST_PSEUDO_REGISTER)
+      if (strict && (unsigned) regno >= FIRST_PSEUDO_REGISTER)
 	return false;
-      if (strict && !REGNO_OK_FOR_BASE_P (regno))
+      if ((unsigned) regno < FIRST_PSEUDO_REGISTER
+	  && !REGNO_OK_FOR_BASE_P (regno))
 	return false;
     }
 
-  /* Validate index register.  On 8086, only SI and DI can be index
-     registers, and only with BX or BP as base.  */
+  /* Validate index register and base+index combination.
+     On 8086, only these base+index pairs are valid:
+       BX+SI, BX+DI, BP+SI, BP+DI.  */
   if (index)
     {
       int iregno = REGNO (index);
-      if (strict && iregno >= FIRST_PSEUDO_REGISTER)
+      if (strict && (unsigned) iregno >= FIRST_PSEUDO_REGISTER)
 	return false;
-      if (strict && !REGNO_OK_FOR_INDEX_P (iregno))
-	return false;
+      if ((unsigned) iregno < FIRST_PSEUDO_REGISTER)
+	{
+	  if (iregno != SI_REG && iregno != DI_REG)
+	    return false;
+	  if (base && (unsigned) REGNO (base) < FIRST_PSEUDO_REGISTER)
+	    {
+	      int bregno = REGNO (base);
+	      if (bregno != BX_REG && bregno != BP_REG)
+		return false;
+	      if (bregno == iregno)
+		return false;
+	    }
+	}
     }
 
   return true;
@@ -412,6 +462,87 @@ ia16_legitimate_constant_p (machine_mode mode ATTRIBUTE_UNUSED, rtx x)
 
 #undef  TARGET_LEGITIMATE_CONSTANT_P
 #define TARGET_LEGITIMATE_CONSTANT_P ia16_legitimate_constant_p
+
+/* Try to rewrite an invalid address into a valid one.
+   The 8086 has very limited addressing modes, so complex addresses
+   need to be decomposed into register loads.  */
+
+static rtx
+ia16_legitimize_address (rtx x, rtx oldx ATTRIBUTE_UNUSED,
+			 machine_mode mode ATTRIBUTE_UNUSED)
+{
+  /* (plus (mem ...) REG) or (plus REG (mem ...)) — memory-indirect.
+     Load the memory part into a register.  */
+  if (GET_CODE (x) == PLUS)
+    {
+      rtx op0 = XEXP (x, 0);
+      rtx op1 = XEXP (x, 1);
+
+      if (MEM_P (op0))
+	return gen_rtx_PLUS (Pmode, force_reg (Pmode, op0), op1);
+      if (MEM_P (op1))
+	return gen_rtx_PLUS (Pmode, op0, force_reg (Pmode, op1));
+
+      /* (plus (plus REG REG) CONST) where REG+REG is not a valid
+	 base+index pair.  Compute REG+REG into a register.  */
+      if (GET_CODE (op0) == PLUS && CONSTANT_P (op1))
+	{
+	  rtx inner0 = XEXP (op0, 0);
+	  rtx inner1 = XEXP (op0, 1);
+	  if (REG_P (inner0) && REG_P (inner1))
+	    {
+	      rtx base, index;
+	      base = inner0;
+	      index = inner1;
+	      /* Normalize order.  */
+	      if ((unsigned) REGNO (base) < FIRST_PSEUDO_REGISTER
+		  && (unsigned) REGNO (index) < FIRST_PSEUDO_REGISTER
+		  && !REGNO_OK_FOR_INDEX_P (REGNO (index)))
+		{
+		  base = inner1;
+		  index = inner0;
+		}
+	      /* If still not a valid pair, fold into a register.  */
+	      if ((unsigned) REGNO (base) < FIRST_PSEUDO_REGISTER
+		  && (unsigned) REGNO (index) < FIRST_PSEUDO_REGISTER)
+		{
+		  int bregno = REGNO (base);
+		  int iregno = REGNO (index);
+		  if ((iregno != SI_REG && iregno != DI_REG)
+		      || (bregno != BX_REG && bregno != BP_REG)
+		      || bregno == iregno)
+		    return gen_rtx_PLUS (Pmode,
+					force_reg (Pmode, op0), op1);
+		}
+	    }
+	}
+
+      /* (plus REG REG) where the pair is not valid.  */
+      if (REG_P (op0) && REG_P (op1))
+	{
+	  int r0 = REGNO (op0);
+	  int r1 = REGNO (op1);
+	  if ((unsigned) r0 < FIRST_PSEUDO_REGISTER
+	      && (unsigned) r1 < FIRST_PSEUDO_REGISTER)
+	    {
+	      /* Check if either ordering works.  */
+	      bool ok = false;
+	      if (REGNO_OK_FOR_BASE_P (r0) && REGNO_OK_FOR_INDEX_P (r1))
+		ok = true;
+	      if (REGNO_OK_FOR_BASE_P (r1) && REGNO_OK_FOR_INDEX_P (r0))
+		ok = true;
+	      if (!ok)
+		return gen_rtx_PLUS (Pmode,
+				     force_reg (Pmode, op0), op1);
+	    }
+	}
+    }
+
+  return x;
+}
+
+#undef  TARGET_LEGITIMIZE_ADDRESS
+#define TARGET_LEGITIMIZE_ADDRESS ia16_legitimize_address
 
 /* --------------------------------------------------------------------------
    Calling Convention
@@ -632,10 +763,6 @@ ia16_rtx_costs (rtx x, machine_mode mode, int outer_code ATTRIBUTE_UNUSED,
 #undef  TARGET_RTX_COSTS
 #define TARGET_RTX_COSTS ia16_rtx_costs
 
-/* Use classic reload, not LRA.  LRA support for a new target is complex.  */
-#undef  TARGET_LRA_P
-#define TARGET_LRA_P hook_bool_void_false
-
 /* --------------------------------------------------------------------------
    Prologue / Epilogue
    -------------------------------------------------------------------------- */
@@ -658,9 +785,12 @@ ia16_expand_prologue (void)
       RTX_FRAME_RELATED_P (insn) = 1;
     }
 
-  /* Save callee-saved registers.  */
+  /* Save callee-saved registers.  Skip byte sub-registers (AL..BL)
+     since they share storage with the parent word register.  */
   for (int i = 0; i < FIRST_PSEUDO_REGISTER; i++)
     {
+      if (i >= AL_REG && i <= BL_REG)
+	continue;
       if (df_regs_ever_live_p (i)
 	  && !call_used_or_fixed_reg_p (i)
 	  && !fixed_regs[i]
@@ -695,9 +825,12 @@ ia16_expand_epilogue (bool is_sibcall ATTRIBUTE_UNUSED)
 			     GEN_INT (m->local_vars_size)));
     }
 
-  /* Restore callee-saved registers (reverse order).  */
+  /* Restore callee-saved registers (reverse order).
+     Skip byte sub-registers (AL..BL).  */
   for (int i = FIRST_PSEUDO_REGISTER - 1; i >= 0; i--)
     {
+      if (i >= AL_REG && i <= BL_REG)
+	continue;
       if (df_regs_ever_live_p (i)
 	  && !call_used_or_fixed_reg_p (i)
 	  && !fixed_regs[i]
@@ -790,6 +923,10 @@ ia16_print_operand (FILE *file, rtx x, int code)
       fputc ('w', file);
       return;
 
+    case 'P':
+      /* Print operand without '$' prefix (for call/jmp targets).  */
+      break;
+
     case 0:
       /* Default: print operand normally.  */
       break;
@@ -820,10 +957,20 @@ ia16_print_operand (FILE *file, rtx x, int code)
     {
       ia16_print_operand_address (file, GET_MODE (x), XEXP (x, 0));
     }
-  else if (CONST_INT_P (x))
-    fprintf (file, "$%d", (int) INTVAL (x));
   else
-    output_addr_const (file, x);
+    {
+      /* In AT&T syntax, immediates need a '$' prefix.
+	 The 'P' modifier suppresses '$' (for call/jmp targets).  */
+      if (code != 'P'
+	  && (CONST_INT_P (x) || SYMBOL_REF_P (x)
+	      || LABEL_REF_P (x) || GET_CODE (x) == CONST))
+	fputc ('$', file);
+
+      if (CONST_INT_P (x))
+	fprintf (file, HOST_WIDE_INT_PRINT_DEC, INTVAL (x));
+      else
+	output_addr_const (file, x);
+    }
 }
 
 /* Print a memory address.  AT&T syntax: displacement(%base,%index).  */
@@ -831,48 +978,9 @@ void
 ia16_print_operand_address (FILE *file, machine_mode mode ATTRIBUTE_UNUSED,
 			    rtx addr)
 {
-  rtx base = NULL_RTX;
-  rtx index = NULL_RTX;
-  rtx disp = NULL_RTX;
+  rtx base, index, disp;
 
-  if (REG_P (addr))
-    {
-      base = addr;
-    }
-  else if (CONSTANT_P (addr))
-    {
-      disp = addr;
-    }
-  else if (GET_CODE (addr) == PLUS)
-    {
-      rtx op0 = XEXP (addr, 0);
-      rtx op1 = XEXP (addr, 1);
-
-      if (REG_P (op0) && CONSTANT_P (op1))
-	{
-	  base = op0;
-	  disp = op1;
-	}
-      else if (REG_P (op1) && CONSTANT_P (op0))
-	{
-	  base = op1;
-	  disp = op0;
-	}
-      else if (REG_P (op0) && REG_P (op1))
-	{
-	  base = op0;
-	  index = op1;
-	}
-      else if (GET_CODE (op0) == PLUS && CONSTANT_P (op1))
-	{
-	  if (REG_P (XEXP (op0, 0)) && REG_P (XEXP (op0, 1)))
-	    {
-	      base = XEXP (op0, 0);
-	      index = XEXP (op0, 1);
-	      disp = op1;
-	    }
-	}
-    }
+  ia16_decompose_address (addr, &base, &index, &disp);
 
   if (disp)
     output_addr_const (file, disp);
@@ -923,9 +1031,9 @@ ia16_split_si_half (rtx x, int high)
     {
       HOST_WIDE_INT val = INTVAL (x);
       if (high)
-	return GEN_INT ((val >> 16) & 0xffff);
+	return gen_int_mode ((val >> 16) & 0xffff, HImode);
       else
-	return GEN_INT (val & 0xffff);
+	return gen_int_mode (val & 0xffff, HImode);
     }
 
   if (CONST_DOUBLE_P (x) || GET_CODE (x) == CONST)
