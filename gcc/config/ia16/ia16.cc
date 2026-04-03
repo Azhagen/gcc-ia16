@@ -84,13 +84,9 @@ ia16_compute_frame_info (void)
   m->local_vars_size = get_frame_size ();
   m->uses_frame_pointer = frame_pointer_needed;
 
-  /* Count callee-saved registers that need saving.
-     Skip byte sub-registers (AL..BL) — they share storage
-     with their parent word register.  */
+  /* Count callee-saved hard registers that need saving.  */
   for (int i = 0; i < FIRST_PSEUDO_REGISTER; i++)
     {
-      if (i >= AL_REG && i <= BL_REG)
-	continue;
       if (df_regs_ever_live_p (i)
 	  && !call_used_or_fixed_reg_p (i)
 	  && !fixed_regs[i])
@@ -141,10 +137,6 @@ ia16_regno_reg_class (int regno)
     case ES_REG: return SEG_REGS;
     case CC_REG: return NO_REGS;
     case AP_REG: return GENERAL_REGS;
-    case AL_REG: return ABREG;
-    case DL_REG: return ABREG;
-    case CL_REG: return ABREG;
-    case BL_REG: return ABREG;
     default:     return NO_REGS;
     }
 }
@@ -159,13 +151,21 @@ ia16_hard_regno_nregs_hook (unsigned int regno, machine_mode mode)
 unsigned int
 ia16_hard_regno_nregs (unsigned int regno, machine_mode mode)
 {
-  /* Byte registers hold one QImode value only.  */
-  if (regno >= AL_REG && regno <= BL_REG)
-    return GET_MODE_SIZE (mode);
+  /* Treat singleton and otherwise invalid hard-reg/mode combinations as
+     occupying exactly one hard register.  LRA can query this hook while
+     building hard-reg spans without first checking HARD_REGNO_MODE_OK, and
+     returning a multi-register span for CC/AP/ES makes it walk into
+     unrelated adjacent hard registers.  */
+  if (!ia16_hard_regno_mode_ok (regno, mode)
+      || regno == SP_REG
+      || regno == ES_REG
+      || regno == CC_REG
+      || regno == AP_REG)
+    return 1;
 
-  /* 16-bit registers: 1 reg per 16 bits.  */
+  /* General 16-bit registers use one hard reg per word.  */
   unsigned int size = GET_MODE_SIZE (mode);
-  return (size + 1) / 2;
+  return (size + UNITS_PER_WORD - 1) / UNITS_PER_WORD;
 }
 
 #undef  TARGET_HARD_REGNO_NREGS
@@ -181,9 +181,7 @@ ia16_hard_regno_mode_ok_hook (unsigned int regno, machine_mode mode)
 bool
 ia16_hard_regno_mode_ok (unsigned int regno, machine_mode mode)
 {
-  /* Byte sub-registers can only hold QI mode.  */
-  if (regno >= AL_REG && regno <= BL_REG)
-    return GET_MODE_SIZE (mode) == 1;
+  unsigned int size;
 
   /* CC register only holds CCmode.  */
   if (regno == CC_REG)
@@ -197,16 +195,22 @@ ia16_hard_regno_mode_ok (unsigned int regno, machine_mode mode)
   if (regno == SP_REG || regno == AP_REG)
     return mode == HImode || mode == Pmode;
 
-  /* General 16-bit registers (AX=0 .. BP=6): can hold HImode and QImode.  */
-  if (GET_MODE_SIZE (mode) <= 2)
-    return true;
+  /* Only AX/BX/CX/DX have byte-addressable subregs.  */
+  if (mode == QImode)
+    return regno == AX_REG || regno == DX_REG
+	   || regno == CX_REG || regno == BX_REG;
 
-  /* SImode (32-bit) can be held in even-numbered register pairs.
-     AX:DX (0:1), CX:BX (2:3), SI:DI (4:5).  */
-  if (GET_MODE_SIZE (mode) == 4)
-    return (regno == AX_REG || regno == CX_REG || regno == SI_REG);
+  size = GET_MODE_SIZE (mode);
 
-  return false;
+  /* General registers AX..BP can carry scalar values as contiguous 16-bit
+     words, but multiword values must not spill into SP/ES/CC/AP.  */
+  if (size <= UNITS_PER_WORD)
+    return regno < SP_REG;
+
+  if (size > 8)
+    return false;
+
+  return regno + ((size + UNITS_PER_WORD - 1) / UNITS_PER_WORD) <= SP_REG;
 }
 
 #undef  TARGET_HARD_REGNO_MODE_OK
@@ -218,17 +222,58 @@ ia16_modes_tieable_p (machine_mode mode1, machine_mode mode2)
 {
   if (mode1 == mode2)
     return true;
-  /* Integer modes of the same or smaller size are tieable.  */
-  if (GET_MODE_CLASS (mode1) == MODE_INT
-      && GET_MODE_CLASS (mode2) == MODE_INT
-      && GET_MODE_SIZE (mode1) <= 2
-      && GET_MODE_SIZE (mode2) <= 2)
+
+  /* QImode is only available in AX/BX/CX/DX, so it is not generally
+     tieable with wider integer modes.  */
+  if (mode1 == QImode || mode2 == QImode)
+    return false;
+
+  /* Scalar and complex modes that occupy the same number of 16-bit words
+     use the same hard-register layouts.  */
+  if (GET_MODE_CLASS (mode1) != MODE_CC
+      && GET_MODE_CLASS (mode2) != MODE_CC
+      && GET_MODE_SIZE (mode1) == GET_MODE_SIZE (mode2)
+      && GET_MODE_SIZE (mode1) <= 8)
     return true;
   return false;
 }
 
 #undef  TARGET_MODES_TIEABLE_P
 #define TARGET_MODES_TIEABLE_P ia16_modes_tieable_p
+
+/* Implement TARGET_CAN_CHANGE_MODE_CLASS.  QImode is only a view of
+   AX/BX/CX/DX, so refuse QI mode changes for classes that include any
+   other hard register.  */
+static bool
+ia16_can_change_mode_class (machine_mode from, machine_mode to,
+			    reg_class_t rclass)
+{
+  if (from == to)
+    return true;
+
+  if (from == QImode || to == QImode)
+    return reg_class_subset_p (rclass, QI_REGS);
+
+  return true;
+}
+
+#undef  TARGET_CAN_CHANGE_MODE_CLASS
+#define TARGET_CAN_CHANGE_MODE_CLASS ia16_can_change_mode_class
+
+/* The assembler accepts explicit 16-bit and 32-bit integer directives.
+   Provide the 32-bit form so DWARF can emit real 4-byte lengths and
+   addresses instead of splitting them into overflowing 16-bit pieces.  */
+#undef  TARGET_ASM_ALIGNED_HI_OP
+#define TARGET_ASM_ALIGNED_HI_OP "\t.word\t"
+
+#undef  TARGET_ASM_ALIGNED_SI_OP
+#define TARGET_ASM_ALIGNED_SI_OP "\t.long\t"
+
+#undef  TARGET_ASM_UNALIGNED_HI_OP
+#define TARGET_ASM_UNALIGNED_HI_OP TARGET_ASM_ALIGNED_HI_OP
+
+#undef  TARGET_ASM_UNALIGNED_SI_OP
+#define TARGET_ASM_UNALIGNED_SI_OP TARGET_ASM_ALIGNED_SI_OP
 
 /* --------------------------------------------------------------------------
    Frame Pointer / Elimination
@@ -237,8 +282,11 @@ ia16_modes_tieable_p (machine_mode mode1, machine_mode mode2)
 static bool
 ia16_frame_pointer_required (void)
 {
-  /* On 8086, SP cannot be used as a base register for addressing,
-     so we always need a frame pointer (BP) to access locals and args.  */
+  /* SP is not a valid base register for ordinary memory operands on ia16.
+     As soon as GCC chooses SP as the frame base, reload can form illegal
+     stack references like [sp-4].  Keep BP as the hard frame pointer and
+     solve the original register-pressure issue via reload-address
+     legalization instead.  */
   return true;
 }
 
@@ -246,9 +294,9 @@ ia16_frame_pointer_required (void)
 #define TARGET_FRAME_POINTER_REQUIRED ia16_frame_pointer_required
 
 bool
-ia16_can_eliminate (int from, int to)
+ia16_can_eliminate (int from ATTRIBUTE_UNUSED, int to)
 {
-  if (to == STACK_POINTER_REGNUM && frame_pointer_needed)
+  if (to == STACK_POINTER_REGNUM)
     return false;
   return true;
 }
@@ -427,9 +475,15 @@ ia16_legitimate_address_p (machine_mode mode ATTRIBUTE_UNUSED,
 
   /* Validate index register and base+index combination.
      On 8086, only these base+index pairs are valid:
-       BX+SI, BX+DI, BP+SI, BP+DI.  */
+      BX+SI, BX+DI, BP+SI, BP+DI.  */
   if (index)
     {
+      /* An address cannot use the same register as both base and index.
+	 Reject this even for pseudos so combine does not keep forms like
+	 `sym + i + i' as a decomposed address.  */
+      if (base && rtx_equal_p (base, index))
+	return false;
+
       int iregno = REGNO (index);
       if (strict && (unsigned) iregno >= FIRST_PSEUDO_REGISTER)
 	return false;
@@ -446,6 +500,17 @@ ia16_legitimate_address_p (machine_mode mode ATTRIBUTE_UNUSED,
 		return false;
 	    }
 	}
+
+      /* ia16 is better off materializing unresolved pseudo base+index
+	 addresses into a single temporary address register than trying to
+	 preserve separate base and index terms through allocation.  If we
+	 accept pseudo base+index here, IRA/LRA pins pointer pseudos into
+	 BASE_REGS and quickly runs out of legal combinations for cases like
+	 `*(p0 + x0) cmp *(p1 + x1)'.  */
+      if (!strict
+	  && ((unsigned) REGNO (base) >= FIRST_PSEUDO_REGISTER
+	      || (unsigned) REGNO (index) >= FIRST_PSEUDO_REGISTER))
+	return false;
     }
 
   return true;
@@ -483,14 +548,24 @@ ia16_legitimize_address (rtx x, rtx oldx ATTRIBUTE_UNUSED,
       if (MEM_P (op1))
 	return gen_rtx_PLUS (Pmode, op0, force_reg (Pmode, op1));
 
-      /* (plus (plus REG REG) CONST) where REG+REG is not a valid
-	 base+index pair.  Compute REG+REG into a register.  */
-      if (GET_CODE (op0) == PLUS && CONSTANT_P (op1))
+      /* (plus (plus REG REG) CONST).  ia16 does not want unresolved
+	 pseudo base+index addresses to survive into IRA/LRA, so compute
+	 REG+REG into a register whenever either term is still a pseudo or
+	 the eventual hard-reg pair would be invalid.  */
+      if ((GET_CODE (op0) == PLUS && CONSTANT_P (op1))
+	  || (GET_CODE (op1) == PLUS && CONSTANT_P (op0)))
 	{
-	  rtx inner0 = XEXP (op0, 0);
-	  rtx inner1 = XEXP (op0, 1);
+	  rtx inner = GET_CODE (op0) == PLUS ? op0 : op1;
+	  rtx disp = GET_CODE (op0) == PLUS ? op1 : op0;
+	  rtx inner0 = XEXP (inner, 0);
+	  rtx inner1 = XEXP (inner, 1);
 	  if (REG_P (inner0) && REG_P (inner1))
 	    {
+	      if (rtx_equal_p (inner0, inner1)
+		  || (unsigned) REGNO (inner0) >= FIRST_PSEUDO_REGISTER
+		  || (unsigned) REGNO (inner1) >= FIRST_PSEUDO_REGISTER)
+		return gen_rtx_PLUS (Pmode, force_reg (Pmode, inner), disp);
+
 	      rtx base, index;
 	      base = inner0;
 	      index = inner1;
@@ -512,16 +587,24 @@ ia16_legitimize_address (rtx x, rtx oldx ATTRIBUTE_UNUSED,
 		      || (bregno != BX_REG && bregno != BP_REG)
 		      || bregno == iregno)
 		    return gen_rtx_PLUS (Pmode,
-					force_reg (Pmode, op0), op1);
+					force_reg (Pmode, inner), disp);
 		}
 	    }
 	}
 
-      /* (plus REG REG) where the pair is not valid.  */
+      /* (plus REG REG).  Materialize unresolved pseudo pairs, or invalid
+	 hard-reg pairs, into a temporary address register.  */
       if (REG_P (op0) && REG_P (op1))
 	{
+	  if (rtx_equal_p (op0, op1))
+	    return force_reg (Pmode, x);
+
 	  int r0 = REGNO (op0);
 	  int r1 = REGNO (op1);
+	  if ((unsigned) r0 >= FIRST_PSEUDO_REGISTER
+	      || (unsigned) r1 >= FIRST_PSEUDO_REGISTER)
+	    return force_reg (Pmode, x);
+
 	  if ((unsigned) r0 < FIRST_PSEUDO_REGISTER
 	      && (unsigned) r1 < FIRST_PSEUDO_REGISTER)
 	    {
@@ -532,8 +615,7 @@ ia16_legitimize_address (rtx x, rtx oldx ATTRIBUTE_UNUSED,
 	      if (REGNO_OK_FOR_BASE_P (r1) && REGNO_OK_FOR_INDEX_P (r0))
 		ok = true;
 	      if (!ok)
-		return gen_rtx_PLUS (Pmode,
-				     force_reg (Pmode, op0), op1);
+		return force_reg (Pmode, x);
 	    }
 	}
     }
@@ -543,6 +625,49 @@ ia16_legitimize_address (rtx x, rtx oldx ATTRIBUTE_UNUSED,
 
 #undef  TARGET_LEGITIMIZE_ADDRESS
 #define TARGET_LEGITIMIZE_ADDRESS ia16_legitimize_address
+
+/* Worker for LEGITIMIZE_RELOAD_ADDRESS.
+
+   If reload keeps an ia16 base+index address in decomposed form, each
+   address can consume two hard registers: one BASE_INDEX_REGS register
+   and one INDEX_REGS register.  That is enough to trigger reload
+   failures in cases like `*(p0 + x0) cmp *(p1 + x1)' when BP is also
+   tied up as the hard frame pointer.  Force such addresses through a
+   single BASE_REGS reload instead.  */
+bool
+ia16_legitimize_reload_address (rtx *x, machine_mode mode ATTRIBUTE_UNUSED,
+				int opnum, int itype,
+				int ind_levels ATTRIBUTE_UNUSED)
+{
+  enum reload_type type = (enum reload_type) itype;
+  rtx addr = *x;
+
+  if (type == RELOAD_OTHER)
+    type = RELOAD_FOR_OTHER_ADDRESS;
+
+  if (GET_CODE (addr) == PLUS)
+    {
+      rtx op0 = XEXP (addr, 0);
+      rtx op1 = XEXP (addr, 1);
+
+      if ((REG_P (op0) && REG_P (op1))
+	  || (GET_CODE (op0) == PLUS
+	      && REG_P (XEXP (op0, 0))
+	      && REG_P (XEXP (op0, 1))
+	      && CONSTANT_P (op1))
+	  || (GET_CODE (op1) == PLUS
+	      && REG_P (XEXP (op1, 0))
+	      && REG_P (XEXP (op1, 1))
+	      && CONSTANT_P (op0)))
+	{
+	  push_reload (addr, NULL_RTX, x, NULL,
+		       BASE_REGS, Pmode, VOIDmode, 0, 0, opnum, type);
+	  return true;
+	}
+    }
+
+  return false;
+}
 
 /* --------------------------------------------------------------------------
    Calling Convention
@@ -785,12 +910,9 @@ ia16_expand_prologue (void)
       RTX_FRAME_RELATED_P (insn) = 1;
     }
 
-  /* Save callee-saved registers.  Skip byte sub-registers (AL..BL)
-     since they share storage with the parent word register.  */
+  /* Save callee-saved hard registers.  */
   for (int i = 0; i < FIRST_PSEUDO_REGISTER; i++)
     {
-      if (i >= AL_REG && i <= BL_REG)
-	continue;
       if (df_regs_ever_live_p (i)
 	  && !call_used_or_fixed_reg_p (i)
 	  && !fixed_regs[i]
@@ -825,12 +947,9 @@ ia16_expand_epilogue (bool is_sibcall ATTRIBUTE_UNUSED)
 			     GEN_INT (m->local_vars_size)));
     }
 
-  /* Restore callee-saved registers (reverse order).
-     Skip byte sub-registers (AL..BL).  */
+  /* Restore callee-saved hard registers in reverse order.  */
   for (int i = FIRST_PSEUDO_REGISTER - 1; i >= 0; i--)
     {
-      if (i >= AL_REG && i <= BL_REG)
-	continue;
       if (df_regs_ever_live_p (i)
 	  && !call_used_or_fixed_reg_p (i)
 	  && !fixed_regs[i]
@@ -881,13 +1000,21 @@ ia16_asm_file_start (void)
 void
 ia16_print_operand (FILE *file, rtx x, int code)
 {
+  rtx reg = x;
+
+  /* Lowpart subregs are how reload models byte views of wider pseudos.  */
+  if (SUBREG_P (reg)
+      && REG_P (SUBREG_REG (reg))
+      && subreg_lowpart_p (reg))
+    reg = SUBREG_REG (reg);
+
   switch (code)
     {
     case 'H':
       /* Print high byte register name.  */
-      if (REG_P (x))
+      if (REG_P (reg))
 	{
-	  switch (REGNO (x))
+	  switch (REGNO (reg))
 	    {
 	    case AX_REG: fputs ("%ah", file); return;
 	    case BX_REG: fputs ("%bh", file); return;
@@ -900,9 +1027,9 @@ ia16_print_operand (FILE *file, rtx x, int code)
 
     case 'L':
       /* Print low byte register name.  */
-      if (REG_P (x))
+      if (REG_P (reg))
 	{
-	  switch (REGNO (x))
+	  switch (REGNO (reg))
 	    {
 	    case AX_REG: fputs ("%al", file); return;
 	    case BX_REG: fputs ("%bl", file); return;
@@ -936,9 +1063,9 @@ ia16_print_operand (FILE *file, rtx x, int code)
       return;
     }
 
-  if (REG_P (x))
+  if (REG_P (reg))
     {
-      int regno = REGNO (x);
+      int regno = REGNO (reg);
       /* In QImode, use byte register names for AX/DX/CX/BX.  */
       if (GET_MODE (x) == QImode)
 	{
@@ -1015,51 +1142,92 @@ ia16_output_move_insn (rtx *operands, machine_mode mode)
     return "movw\t%1, %0";
 }
 
-/* Split a SImode move into two HImode moves.  OPERANDS[0..1] are the
-   original dest/src; RESULT[0..3] are filled with lo_dest, lo_src,
-   hi_dest, hi_src.  */
+/* Return complex part PART of X in MODE as an inner-mode operand.  */
+rtx
+ia16_complex_part (rtx x, machine_mode mode, unsigned int part)
+{
+  machine_mode inner_mode = GET_MODE_INNER (mode);
+  rtx result;
+
+  gcc_assert (COMPLEX_MODE_P (mode));
+  gcc_assert (part < 2);
+
+  if (GET_CODE (x) == CONCAT)
+    {
+      gcc_assert (GET_MODE (x) == mode);
+      return XEXP (x, part);
+    }
+
+  result = simplify_gen_subreg (inner_mode, x, mode,
+				part * GET_MODE_SIZE (inner_mode));
+  gcc_assert (result != NULL_RTX);
+  return result;
+}
+
+/* Return word WORD of X in MODE as an HImode operand.  */
+rtx
+ia16_subword (rtx x, machine_mode mode, unsigned int word)
+{
+  if (GET_CODE (x) == CONCAT && COMPLEX_MODE_P (mode))
+    {
+      machine_mode inner_mode = GET_MODE_INNER (mode);
+      unsigned int inner_words =
+	(GET_MODE_SIZE (inner_mode) + UNITS_PER_WORD - 1) / UNITS_PER_WORD;
+
+      if (word < inner_words)
+	return ia16_subword (XEXP (x, 0), inner_mode, word);
+      return ia16_subword (XEXP (x, 1), inner_mode, word - inner_words);
+    }
+
+  rtx part = operand_subword (x, word, 1, mode);
+
+  gcc_assert (part != NULL_RTX);
+  return part;
+}
 
 rtx
 ia16_split_si_half (rtx x, int high)
 {
-  int offset = high ? 2 : 0;
+  return ia16_subword (x, SImode, high);
+}
 
-  if (MEM_P (x))
-    return adjust_address (x, HImode, offset);
+/* Emit a multiword move as one HImode move per word.  */
+void
+ia16_emit_multiword_move (rtx *operands, machine_mode mode)
+{
+  const unsigned int nwords =
+    (GET_MODE_SIZE (mode) + UNITS_PER_WORD - 1) / UNITS_PER_WORD;
 
-  if (CONST_INT_P (x))
+  for (unsigned int i = 0; i < nwords; ++i)
+    emit_move_insn (ia16_subword (operands[0], mode, i),
+		    ia16_subword (operands[1], mode, i));
+}
+
+/* Push a multiword value one HImode chunk at a time, highest word first.  */
+void
+ia16_emit_multiword_push (rtx op, machine_mode mode)
+{
+  const unsigned int nwords =
+    (GET_MODE_SIZE (mode) + UNITS_PER_WORD - 1) / UNITS_PER_WORD;
+
+  for (unsigned int i = nwords; i-- > 0; )
     {
-      HOST_WIDE_INT val = INTVAL (x);
-      if (high)
-	return gen_int_mode ((val >> 16) & 0xffff, HImode);
-      else
-	return gen_int_mode (val & 0xffff, HImode);
-    }
+      rtx part = ia16_subword (op, mode, i);
 
-  if (CONST_DOUBLE_P (x) || GET_CODE (x) == CONST)
-    {
-      if (high)
-	return gen_highpart (HImode, x);
-      else
-	return gen_lowpart (HImode, x);
-    }
+      if (TARGET_8086 && CONSTANT_P (part))
+	part = force_reg (HImode, part);
 
-  /* Register: use subreg.  */
-  return simplify_gen_subreg (HImode, x, SImode, offset);
+      emit_insn (gen_push (part));
+    }
 }
 
 void
 ia16_split_movsi (rtx *operands, rtx *result)
 {
-  rtx dest = operands[0];
-  rtx src = operands[1];
-
-  /* Low half.  */
-  result[0] = ia16_split_si_half (dest, 0);
-  result[1] = ia16_split_si_half (src, 0);
-  /* High half.  */
-  result[2] = ia16_split_si_half (dest, 1);
-  result[3] = ia16_split_si_half (src, 1);
+  result[0] = ia16_subword (operands[0], SImode, 0);
+  result[1] = ia16_subword (operands[1], SImode, 0);
+  result[2] = ia16_subword (operands[0], SImode, 1);
+  result[3] = ia16_subword (operands[1], SImode, 1);
 }
 
 /* Return true if the current function can use a simple RET.

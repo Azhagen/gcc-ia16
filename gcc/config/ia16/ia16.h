@@ -131,7 +131,7 @@
 #define FRAME_GROWS_DOWNWARD	1
 #define FIRST_PARM_OFFSET(FNDECL) 0
 
-#define MAX_REGS_PER_ADDRESS	1
+#define MAX_REGS_PER_ADDRESS	2
 
 /* Pointer size is 16 bits for near pointers, 32 bits for far pointers.  */
 #define Pmode		HImode
@@ -214,29 +214,33 @@
 #define ES_REG		8
 #define CC_REG		9
 #define AP_REG		10  /* Arg pointer (virtual).  */
-#define AL_REG		11
-#define DL_REG		12
-#define CL_REG		13
-#define BL_REG		14
 
-#define FIRST_PSEUDO_REGISTER 15
+#define FIRST_PSEUDO_REGISTER 11
 
 /* Register names for the assembler.  */
 #define REGISTER_NAMES						\
 {								\
   "%ax", "%dx", "%cx", "%bx", "%si", "%di", "%bp", "%sp",	\
-  "%es", "cc", "argp",						\
-  "%al", "%dl", "%cl", "%bl"					\
+  "%es", "cc", "argp"						\
 }
 
-/* Each 16-bit register AX/BX/CX/DX has a low-byte sub-register.
-   SI, DI, BP, SP do not have byte-accessible sub-registers on 8086.  */
+/* AX, BX, CX, and DX have byte-addressable low and high halves.
+   GCC models those as QImode views of the parent HImode hard registers,
+   rather than as separate hard registers.  */
+
+#define ADDITIONAL_REGISTER_NAMES					\
+{									\
+  { "al", AX_REG }, { "ah", AX_REG },					\
+  { "dl", DX_REG }, { "dh", DX_REG },					\
+  { "cl", CX_REG }, { "ch", CX_REG },					\
+  { "bl", BX_REG }, { "bh", BX_REG }					\
+}
 
 enum reg_class
 {
   NO_REGS,
   AREG,		/* AX only.  */
-  ABREG,	/* AL, BL, CL, DL (8-bit regs).  */
+  ABREG,	/* AX, DX, CX, BX (registers with byte subregs).  */
   CREG,		/* CX only (for shifts).  */
   DREG,		/* DX only (for multiply/divide).  */
   ADREG,	/* AX + DX (for 32-bit return).  */
@@ -245,8 +249,8 @@ enum reg_class
   INDEX_REGS,	/* SI, DI (index registers for addressing).  */
   BASE_INDEX_REGS, /* BX, BP (base when index is present).  */
   BASE_REGS,	/* BX, SI, DI, BP (valid base for addressing).  */
-  QI_REGS,	/* AX, DX, CX, BX, AL, DL, CL, BL (byte-capable).  */
-  GENERAL_REGS,	/* AX, BX, CX, DX, SI, DI, BP.  */
+  QI_REGS,	/* AX, DX, CX, BX (byte-capable).  */
+  GENERAL_REGS,	/* AX, BX, CX, DX, SI, DI, BP, SP.  */
   SEG_REGS,	/* ES.  */
   ALL_REGS,
   LIM_REG_CLASSES
@@ -273,13 +277,13 @@ enum reg_class
   "ALL_REGS"					\
 }
 
-/*  Registers:        BL CL DL AL AP CC ES SP BP DI SI BX CX DX AX
-    Bit positions:    14 13 12 11 10  9  8  7  6  5  4  3  2  1  0  */
+/*  Registers:        AP CC ES SP BP DI SI BX CX DX AX
+    Bit positions:    10  9  8  7  6  5  4  3  2  1  0  */
 #define REG_CLASS_CONTENTS						\
 {									\
   { 0x0000 },	/* NO_REGS     */					\
   { 0x0001 },	/* AREG        - AX */					\
-  { 0x7800 },	/* ABREG       - AL, DL, CL, BL */			\
+  { 0x000F },	/* ABREG       - AX, DX, CX, BX */			\
   { 0x0004 },	/* CREG        - CX */					\
   { 0x0002 },	/* DREG        - DX */					\
   { 0x0003 },	/* ADREG       - AX, DX */				\
@@ -288,19 +292,22 @@ enum reg_class
   { 0x0030 },	/* INDEX_REGS  - SI, DI */				\
   { 0x0048 },	/* BASE_INDEX_REGS - BX, BP */				\
   { 0x0078 },	/* BASE_REGS   - BX, SI, DI, BP */			\
-  { 0x780F },	/* QI_REGS     - AX, DX, CX, BX, AL, DL, CL, BL */	\
+  { 0x000F },	/* QI_REGS     - AX, DX, CX, BX */			\
   { 0x00FF },	/* GENERAL_REGS - AX, DX, CX, BX, SI, DI, BP, SP */	\
   { 0x0100 },	/* SEG_REGS    - ES */					\
-  { 0x7FFF }	/* ALL_REGS    */					\
+  { 0x07FF }	/* ALL_REGS    */					\
 }
 
 #define GENERAL_REGS	GENERAL_REGS
 
-/* When an index register is present (index_code == REG), the base
-   must be BX or BP on 8086.  When no index is present, any of
-   BX, SI, DI, BP can be a base.  */
+/* When an index register is present, the final hard-reg base must be
+   BX or BP on 8086.  During LRA, however, unresolved base+index pseudos
+   are already rejected by ia16_legitimate_address_p, so using
+   BASE_INDEX_REGS here only over-constrains intermediate address
+   temporaries.  Let LRA use BASE_REGS for those temporaries and leave
+   final hard-reg legality to the address predicate.  */
 #define MODE_CODE_BASE_REG_CLASS(MODE, AS, OUTER, INDEX)	\
-  ((INDEX) == REG ? BASE_INDEX_REGS : BASE_REGS)
+  (((INDEX) == REG && !lra_in_progress) ? BASE_INDEX_REGS : BASE_REGS)
 
 /* Validate a specific register number as base, depending on whether
    an index register is present.  */
@@ -322,21 +329,20 @@ enum reg_class
 /* 1 = register is fixed and cannot be used by the allocator.  */
 #define FIXED_REGISTERS						\
 {								\
-  /* AX DX CX BX SI DI BP SP ES CC AP AL DL CL BL */		\
-     0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0		\
+  /* AX DX CX BX SI DI BP SP ES CC AP */			\
+     0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1			\
 }
 
 /* 1 = register is clobbered by function calls.  */
 #define CALL_USED_REGISTERS					\
 {								\
-  /* AX DX CX BX SI DI BP SP ES CC AP AL DL CL BL */		\
-     1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0		\
+  /* AX DX CX BX SI DI BP SP ES CC AP */			\
+     1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1			\
 }
 
 /* Allocate caller-saved regs first, then callee-saved.  */
 #define REG_ALLOC_ORDER						\
   { AX_REG, DX_REG, CX_REG, BX_REG, SI_REG, DI_REG, BP_REG,	\
-    AL_REG, DL_REG, CL_REG, BL_REG,				\
     ES_REG, SP_REG, CC_REG, AP_REG }
 
 /* On 8086, only BX, SI, DI, BP can be used as base registers
@@ -370,6 +376,18 @@ enum reg_class
 
 #define INITIAL_ELIMINATION_OFFSET(FROM, TO, OFFSET)		\
   (OFFSET) = ia16_initial_elimination_offset ((FROM), (TO))
+
+/* Reload can otherwise end up spending one hard reg on the base and one
+   on the index for each `p + x' address.  Allow the backend to collapse
+   such sums into one legal base register when that reduces pressure.  */
+#define LEGITIMIZE_RELOAD_ADDRESS(X, MODE, OPNUM, TYPE, INDL, WIN)	\
+  do									\
+    {									\
+      if (ia16_legitimize_reload_address (&(X), (MODE), (OPNUM),		\
+					  (TYPE), (INDL)))		\
+	goto WIN;							\
+    }									\
+  while (0)
 
 #define FUNCTION_ARG_REGNO_P(N)	 0
 #define DEFAULT_PCC_STRUCT_RETURN 1
@@ -446,7 +464,11 @@ extern void ia16_init_cumulative_args (CUMULATIVE_ARGS *, tree, rtx, tree, int);
   fprintf (FILE, "\t.word .L%d-.L%d\n", VALUE, REL)
 
 #undef  DWARF2_ADDR_SIZE
-#define DWARF2_ADDR_SIZE	2
+/* Use 32-bit DWARF addresses and ranges even though near data pointers are
+   16-bit.  Large functions and debug line/aranges tables can easily exceed
+   64 KiB, and emitting 16-bit DWARF address-sized fields makes gas reject
+   perfectly valid debug info at -g.  */
+#define DWARF2_ADDR_SIZE	4
 
 #undef  PREFERRED_DEBUGGING_TYPE
 #define PREFERRED_DEBUGGING_TYPE DWARF2_DEBUG

@@ -1,4 +1,5 @@
 /* { dg-skip-if "" { pdp11-*-* } } */
+/* { dg-skip-if "Not enough 64-bit registers" { ia16-*-* } } */
 /* PR target/35318 */
 
 void
