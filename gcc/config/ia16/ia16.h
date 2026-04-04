@@ -346,13 +346,15 @@ enum reg_class
     ES_REG, SP_REG, CC_REG, AP_REG }
 
 /* On 8086, only BX, SI, DI, BP can be used as base registers
-   for memory addressing.  SP cannot be used with displacement.  */
+   for memory addressing.  AP is a virtual register that will be
+   eliminated to BP, so it is also valid as a base.  */
 #define REGNO_OK_FOR_BASE_P(REGNO)				\
   (((unsigned)(REGNO) < FIRST_PSEUDO_REGISTER			\
     && ((REGNO) == BX_REG					\
 	|| (REGNO) == SI_REG					\
 	|| (REGNO) == DI_REG					\
-	|| (REGNO) == BP_REG))					\
+	|| (REGNO) == BP_REG					\
+	|| (REGNO) == AP_REG))					\
    || (unsigned)(REGNO) >= FIRST_PSEUDO_REGISTER)
 
 /* On 8086, only SI and DI can be index registers (used with

@@ -207,7 +207,7 @@ ia16_hard_regno_mode_ok (unsigned int regno, machine_mode mode)
   if (size <= UNITS_PER_WORD)
     return regno < SP_REG;
 
-  if (size > 8)
+  if (size > 4)
     return false;
 
   return regno + ((size + UNITS_PER_WORD - 1) / UNITS_PER_WORD) <= SP_REG;
@@ -233,7 +233,7 @@ ia16_modes_tieable_p (machine_mode mode1, machine_mode mode2)
   if (GET_MODE_CLASS (mode1) != MODE_CC
       && GET_MODE_CLASS (mode2) != MODE_CC
       && GET_MODE_SIZE (mode1) == GET_MODE_SIZE (mode2)
-      && GET_MODE_SIZE (mode1) <= 8)
+      && GET_MODE_SIZE (mode1) <= 4)
     return true;
   return false;
 }
