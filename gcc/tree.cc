@@ -3876,10 +3876,16 @@ array_type_nelts_minus_one (const_tree type)
 tree
 array_type_nelts_top (tree type)
 {
+  tree nelts_minus_one = array_type_nelts_minus_one (type);
+
+  if (nelts_minus_one == error_mark_node)
+    return error_mark_node;
+
+  tree nelts_type = TREE_TYPE (nelts_minus_one);
   return fold_build2_loc (input_location,
-		      PLUS_EXPR, sizetype,
-		      array_type_nelts_minus_one (type),
-		      size_one_node);
+		      PLUS_EXPR, nelts_type,
+		      nelts_minus_one,
+		      build_int_cst (nelts_type, 1));
 }
 
 /* If arg is static -- a reference to an object in static storage -- then
@@ -7012,9 +7018,12 @@ valid_constant_size_p (const_tree size, cst_size_error *perr /* = NULL */)
       *perr = cst_size_negative;
       return false;
     }
-  if (!tree_fits_uhwi_p (size)
-      || (wi::to_widest (TYPE_MAX_VALUE (sizetype))
-	  < wi::to_widest (size) * 2))
+
+  widest_int maxsize = wi::to_widest (TYPE_MAX_VALUE (TREE_TYPE (size)));
+  if (TYPE_UNSIGNED (TREE_TYPE (size)))
+    maxsize = maxsize >> 1;
+
+  if (wi::to_widest (size) > maxsize)
     {
       *perr = cst_size_too_big;
       return false;

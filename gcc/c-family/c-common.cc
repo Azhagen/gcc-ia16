@@ -3999,6 +3999,7 @@ c_sizeof_or_alignof_type (location_t loc,
 {
   const char *op_name;
   tree value = NULL;
+  tree result_type = size_type_node;
   enum tree_code type_code = TREE_CODE (type);
 
   op_name = is_sizeof ? "sizeof" : "__alignof__";
@@ -4066,10 +4067,17 @@ c_sizeof_or_alignof_type (location_t loc,
   else
     {
       if (is_sizeof)
-	/* Convert in case a char is more than one unit.  */
-	value = size_binop_loc (loc, CEIL_DIV_EXPR, TYPE_SIZE_UNIT (type),
-				size_int (TYPE_PRECISION (char_type_node)
-					  / BITS_PER_UNIT));
+  {
+    tree size_unit_type = TREE_TYPE (TYPE_SIZE_UNIT (type));
+    tree char_unit = build_int_cst (size_unit_type,
+           TYPE_PRECISION (char_type_node)
+           / BITS_PER_UNIT);
+
+    /* Convert in case a char is more than one unit.  */
+    value = size_binop_loc (loc, CEIL_DIV_EXPR, TYPE_SIZE_UNIT (type),
+          char_unit);
+    result_type = targetm.addr_space.size_type (TYPE_ADDR_SPACE (type));
+  }
       else if (min_alignof)
 	value = size_int (min_align_of_type (type));
       else
@@ -4079,7 +4087,7 @@ c_sizeof_or_alignof_type (location_t loc,
   /* VALUE will have the middle-end integer type sizetype.
      However, we should really return a value of type `size_t',
      which is just a typedef for an ordinary integer type.  */
-  value = fold_convert_loc (loc, size_type_node, value);
+    value = fold_convert_loc (loc, result_type, value);
 
   return value;
 }
@@ -7355,22 +7363,29 @@ fold_offsetof (tree expr, tree type, enum tree_code ctx)
 int
 complete_array_type (tree *ptype, tree initial_value, bool do_default)
 {
-  tree maxindex, type, main_type, elt, unqual_elt;
+  tree type, maxindex, main_type, elt, unqual_elt;
   int failure = 0, quals;
   bool overflow_p = false;
+  tree size_type, signed_size_type, size_zero, size_one;
 
-  maxindex = size_zero_node;
+  type = *ptype;
+  size_type = targetm.addr_space.size_type (TYPE_ADDR_SPACE (type));
+  signed_size_type = signed_type_for (size_type);
+  size_zero = build_int_cst (size_type, 0);
+  size_one = build_int_cst (size_type, 1);
+
+  maxindex = size_zero;
   if (initial_value)
     {
       STRIP_ANY_LOCATION_WRAPPER (initial_value);
 
       if (TREE_CODE (initial_value) == STRING_CST)
-	{
-	  int eltsize
-	    = int_size_in_bytes (TREE_TYPE (TREE_TYPE (initial_value)));
-	  maxindex = size_int (TREE_STRING_LENGTH (initial_value) / eltsize
-			       - 1);
-	}
+  {
+    int eltsize
+      = int_size_in_bytes (TREE_TYPE (TREE_TYPE (initial_value)));
+    maxindex = build_int_cst (size_type,
+             TREE_STRING_LENGTH (initial_value) / eltsize - 1);
+  }
       else if (TREE_CODE (initial_value) == CONSTRUCTOR)
 	{
 	  vec<constructor_elt, va_gc> *v = CONSTRUCTOR_ELTS (initial_value);
@@ -7379,7 +7394,7 @@ complete_array_type (tree *ptype, tree initial_value, bool do_default)
 	    {
 	      if (pedantic)
 		failure = 3;
-	      maxindex = ssize_int (-1);
+        maxindex = build_int_cst (signed_size_type, -1);
 	    }
 	  else
 	    {
@@ -7408,19 +7423,19 @@ complete_array_type (tree *ptype, tree initial_value, bool do_default)
 			     unsigned types, we need an explicit overflow
 			     check.  */
 			  tree orig = curindex;
-		          curindex = fold_convert (sizetype, curindex);
+        curindex = fold_convert (size_type, curindex);
 			  overflow_p |= tree_int_cst_lt (curindex, orig);
 			  curfold_p = false;
 			}
 		      if (TREE_CODE (ce->value) == RAW_DATA_CST)
 			curindex
 			  = size_binop (PLUS_EXPR, curindex,
-					size_int (RAW_DATA_LENGTH (ce->value)
-						  - ((ce->index || !cnt)
-						     ? 1 : 0)));
+         build_int_cst (size_type,
+            RAW_DATA_LENGTH (ce->value)
+            - ((ce->index || !cnt)
+               ? 1 : 0)));
 		      else
-			curindex = size_binop (PLUS_EXPR, curindex,
-					       size_one_node);
+      curindex = size_binop (PLUS_EXPR, curindex, size_one);
 		    }
 		  if (tree_int_cst_lt (maxindex, curindex))
 		    maxindex = curindex, fold_p = curfold_p;
@@ -7428,7 +7443,7 @@ complete_array_type (tree *ptype, tree initial_value, bool do_default)
 	      if (fold_p)
 		{
 		  tree orig = maxindex;
-	          maxindex = fold_convert (sizetype, maxindex);
+      maxindex = fold_convert (size_type, maxindex);
 		  overflow_p |= tree_int_cst_lt (maxindex, orig);
 		}
 	    }
@@ -7447,7 +7462,6 @@ complete_array_type (tree *ptype, tree initial_value, bool do_default)
 	return failure;
     }
 
-  type = *ptype;
   elt = TREE_TYPE (type);
   quals = TYPE_QUALS (strip_array_types (elt));
   if (quals == 0)
@@ -7461,8 +7475,7 @@ complete_array_type (tree *ptype, tree initial_value, bool do_default)
   main_type = build_distinct_type_copy (TYPE_MAIN_VARIANT (type));
   TREE_TYPE (main_type) = unqual_elt;
   TYPE_DOMAIN (main_type)
-    = build_range_type (TREE_TYPE (maxindex),
-			build_int_cst (TREE_TYPE (maxindex), 0), maxindex);
+	= build_range_type (size_type, size_zero, maxindex);
   TYPE_TYPELESS_STORAGE (main_type) = TYPE_TYPELESS_STORAGE (type);
   layout_type (main_type);
 

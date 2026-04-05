@@ -3245,12 +3245,21 @@ tree
 array_type_nelts_total (tree type)
 {
   tree sz = array_type_nelts_top (type);
+
+  if (sz == error_mark_node)
+    return error_mark_node;
+
+  tree sz_type = TREE_TYPE (sz);
   type = TREE_TYPE (type);
   while (TREE_CODE (type) == ARRAY_TYPE)
     {
       tree n = array_type_nelts_top (type);
+      if (n == error_mark_node)
+	return error_mark_node;
+      if (TREE_TYPE (n) != sz_type)
+	n = fold_convert_loc (input_location, sz_type, n);
       sz = fold_build2_loc (input_location,
-			MULT_EXPR, sizetype, sz, n);
+			MULT_EXPR, sz_type, sz, n);
       type = TREE_TYPE (type);
     }
   return sz;

@@ -7299,8 +7299,14 @@ grokdeclarator (const struct c_declarator *declarator,
 	  {
 	    tree itype = NULL_TREE;
 	    tree size = declarator->u.array.dimen;
+	    addr_space_t array_as = DECODE_QUAL_ADDR_SPACE (type_quals);
+	    if (ADDR_SPACE_GENERIC_P (array_as))
+	      array_as = TYPE_ADDR_SPACE (type);
+	    tree size_type = targetm.addr_space.size_type (array_as);
 	    /* The index is a signed object `sizetype' bits wide.  */
-	    tree index_type = c_common_signed_type (sizetype);
+	    tree index_type = c_common_signed_type (size_type);
+	    tree size_zero = build_int_cst (size_type, 0);
+	    tree size_one = build_int_cst (size_type, 1);
 
 	    array_ptr_quals = declarator->u.array.quals;
 	    array_ptr_attrs = declarator->u.array.attrs;
@@ -7465,7 +7471,7 @@ grokdeclarator (const struct c_declarator *declarator,
 		       an unsigned index type, which is what we'll
 		       get with build_index_type.  Create an
 		       open-ended range instead.  */
-		    itype = build_range_type (sizetype, size, NULL_TREE);
+		    itype = build_range_type (size_type, size_zero, NULL_TREE);
 		  }
 		else
 		  {
@@ -7484,8 +7490,7 @@ grokdeclarator (const struct c_declarator *declarator,
 		       done in the proper mode.  */
 		    itype = fold_build2_loc (loc, MINUS_EXPR, index_type,
 					     convert (index_type, size),
-					     convert (index_type,
-						      size_one_node));
+				     convert (index_type, size_one));
 
 		    /* The above overflows when size does not fit
 		       in index_type.
@@ -7504,7 +7509,7 @@ grokdeclarator (const struct c_declarator *declarator,
 			continue;
 		      }
 
-		    itype = build_index_type (itype);
+		    itype = build_range_type (size_type, size_zero, itype);
 		  }
 		if (this_size_varies)
 		  {

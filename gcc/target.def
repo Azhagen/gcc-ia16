@@ -3523,6 +3523,15 @@ default version of this hook returns @code{ptrdiff_type_node}.",
  tree, (addr_space_t as),
  default_addr_space_ptrdiff_type)
 
+/* Type to use for object sizes and array bounds in a named address space.  */
+DEFHOOK
+(size_type,
+ "Define this to return the unsigned tree type to use for object sizes\n\
+and array bounds in the named address space @var{as}.  The default\n\
+version of this hook returns @code{sizetype}.",
+ tree, (addr_space_t as),
+ default_addr_space_size_type)
+
 /* True if 0 is a valid address in the address space, or false if
    0 is a NULL in the address space.  */
 DEFHOOK

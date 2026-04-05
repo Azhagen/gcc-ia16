@@ -825,12 +825,22 @@ layout_decl (tree decl, unsigned int known_align)
 	     being that on the target rather than the host.  */
 	  unsigned HOST_WIDE_INT max_size = warn_larger_than_size;
 	  if (max_size == HOST_WIDE_INT_MAX)
-	    max_size = tree_to_shwi (TYPE_MAX_VALUE (ptrdiff_type_node));
+      {
+        widest_int max_size_wi = wi::to_widest (TYPE_MAX_VALUE (TREE_TYPE (size)));
 
-	  if (compare_tree_int (size, max_size) > 0)
-	    warning (OPT_Wlarger_than_, "size of %q+D %E bytes exceeds "
-		     "maximum object size %wu",
-		     decl, size, max_size);
+        if (TYPE_UNSIGNED (TREE_TYPE (size)))
+    max_size_wi = max_size_wi >> 1;
+
+        tree max_size_tree = wide_int_to_tree (TREE_TYPE (size), max_size_wi);
+        if (tree_int_cst_lt (max_size_tree, size))
+    warning (OPT_Wlarger_than_, "size of %q+D %E bytes exceeds "
+       "maximum object size %E",
+       decl, size, max_size_tree);
+      }
+    else if (compare_tree_int (size, max_size) > 0)
+      warning (OPT_Wlarger_than_, "size of %q+D %E bytes exceeds "
+         "maximum object size %wu",
+         decl, size, max_size);
 	}
     }
 
@@ -2663,6 +2673,9 @@ layout_type (tree type)
       {
 	tree index = TYPE_DOMAIN (type);
 	tree element = TREE_TYPE (type);
+	tree size_type = index ? TREE_TYPE (index) : sizetype;
+	tree signed_size_type = signed_type_for (size_type);
+	tree size_zero = build_int_cst (size_type, 0);
 
 	/* We need to know both bounds in order to compute the size.  */
 	if (index && TYPE_MAX_VALUE (index) && TYPE_MIN_VALUE (index)
@@ -2676,7 +2689,7 @@ layout_type (tree type)
 	    /* Make sure that an array of zero-sized element is zero-sized
 	       regardless of its extent.  */
 	    if (integer_zerop (element_size))
-	      length = size_zero_node;
+        length = size_zero;
 
 	    /* The computation should happen in the original signedness so
 	       that (possible) negative values are handled appropriately
@@ -2690,18 +2703,18 @@ layout_type (tree type)
 		    && TYPE_UNSIGNED (TREE_TYPE (lb))
 		    && tree_int_cst_lt (ub, lb))
 		  {
-		    lb = wide_int_to_tree (ssizetype,
-					   offset_int::from (wi::to_wide (lb),
-							     SIGNED));
-		    ub = wide_int_to_tree (ssizetype,
-					   offset_int::from (wi::to_wide (ub),
-							     SIGNED));
+        lb = wide_int_to_tree (signed_size_type,
+              offset_int::from (wi::to_wide (lb),
+                    SIGNED));
+        ub = wide_int_to_tree (signed_size_type,
+              offset_int::from (wi::to_wide (ub),
+                    SIGNED));
 		  }
 		length
-		  = fold_convert (sizetype,
-				  size_binop (PLUS_EXPR,
-					      build_int_cst (TREE_TYPE (lb), 1),
-					      size_binop (MINUS_EXPR, ub, lb)));
+      = fold_convert (size_type,
+          size_binop (PLUS_EXPR,
+                build_int_cst (TREE_TYPE (lb), 1),
+                size_binop (MINUS_EXPR, ub, lb)));
 	      }
 
 	    /* ??? We have no way to distinguish a null-sized array from an
@@ -2710,7 +2723,7 @@ layout_type (tree type)
 	    if (integer_zerop (length)
 	        && TREE_OVERFLOW (length)
 		&& integer_zerop (lb))
-	      length = size_zero_node;
+        length = size_zero;
 
 	    TYPE_SIZE (type) = size_binop (MULT_EXPR, element_size,
 					   bits_from_bytes (length));
@@ -2721,7 +2734,9 @@ layout_type (tree type)
 	       size of the array is determined at runtime) substantially.  */
 	    if (TYPE_SIZE_UNIT (element))
 	      TYPE_SIZE_UNIT (type)
-		= size_binop (MULT_EXPR, TYPE_SIZE_UNIT (element), length);
+    = size_binop (MULT_EXPR,
+            fold_convert (size_type, TYPE_SIZE_UNIT (element)),
+            length);
 	  }
 
 	/* Now round the alignment and size,

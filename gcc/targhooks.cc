@@ -1780,6 +1780,15 @@ default_addr_space_ptrdiff_type (addr_space_t as ATTRIBUTE_UNUSED)
   return ptrdiff_type_node;
 }
 
+/* The default hook for the size type of objects within a named address
+   space.  */
+
+tree
+default_addr_space_size_type (addr_space_t as ATTRIBUTE_UNUSED)
+{
+  return sizetype;
+}
+
 /* The default hook for determining if 0 within a named address
    space is a valid address.  */
 

@@ -13138,13 +13138,17 @@ fold_sizeof_expr (tree t)
 
 static tree
 compute_array_index_type_loc (location_t name_loc, tree name, tree size,
-			      tsubst_flags_t complain)
+			      tree size_type, tsubst_flags_t complain)
 {
   if (error_operand_p (size))
     return error_mark_node;
 
   /* The type of the index being computed.  */
   tree itype;
+	tree signed_size_type = signed_type_for (size_type);
+	tree size_zero = build_int_cst (size_type, 0);
+	tree size_one = build_int_cst (size_type, 1);
+	tree size_conv_type = size_type == sizetype ? size_type_node : size_type;
 
   /* The original numeric size as seen in the source code before
      conversion to size_t.  */
@@ -13162,7 +13166,7 @@ compute_array_index_type_loc (location_t name_loc, tree name, tree size,
 	   NOP_EXPR with TREE_SIDE_EFFECTS; don't fold in that case.  */;
       else
 	{
-	  size = build_converted_constant_expr (size_type_node, size, complain);
+	  size = build_converted_constant_expr (size_conv_type, size, complain);
 	  /* Pedantically a constant expression is required here and so
 	     __builtin_is_constant_evaluated () should fold to true if it
 	     is successfully folded into a constant.  */
@@ -13203,8 +13207,9 @@ compute_array_index_type_loc (location_t name_loc, tree name, tree size,
       /* Just build the index type and mark that it requires
 	 structural equality checks.  */
     in_template:
-      itype = build_index_type (build_min (MINUS_EXPR, sizetype,
-					   size, size_one_node));
+	itype = build_range_type (size_type, size_zero,
+				  build_min (MINUS_EXPR, size_type,
+					     size, size_one));
       TYPE_DEPENDENT_P (itype) = 1;
       TYPE_DEPENDENT_P_VALID (itype) = 1;
       SET_TYPE_STRUCTURAL_EQUALITY (itype);
@@ -13247,6 +13252,8 @@ compute_array_index_type_loc (location_t name_loc, tree name, tree size,
 	  && tree_int_cst_sign_bit (size))
 	{
 	  diagsize = fold_convert (ssizetype, size);
+	  if (size_type != sizetype)
+	    diagsize = fold_convert (signed_size_type, size);
 
 	  /* Clear the overflow bit that may have been set as a result
 	     of the conversion from the sizetype of the new size to
@@ -13335,8 +13342,8 @@ compute_array_index_type_loc (location_t name_loc, tree name, tree size,
 	processing_template_decl_sentinel s;
 	itype = cp_build_binary_op (input_location,
 				    MINUS_EXPR,
-				    cp_convert (ssizetype, size, complain),
-				    cp_convert (ssizetype, integer_one_node,
+				    cp_convert (signed_size_type, size, complain),
+				    cp_convert (signed_size_type, size_one,
 						complain),
 				    complain);
 	itype = maybe_constant_value (itype, NULL_TREE, mce_true);
@@ -13369,7 +13376,7 @@ compute_array_index_type_loc (location_t name_loc, tree name, tree size,
     }
 
   /* Create and return the appropriate index type.  */
-  itype = build_index_type (itype);
+	itype = build_range_type (size_type, size_zero, itype);
 
   /* If the index type were dependent, we would have returned early, so
      remember that it isn't.  */
@@ -13381,7 +13388,8 @@ compute_array_index_type_loc (location_t name_loc, tree name, tree size,
 tree
 compute_array_index_type (tree name, tree size, tsubst_flags_t complain)
 {
-  return compute_array_index_type_loc (input_location, name, size, complain);
+  return compute_array_index_type_loc (input_location, name, size,
+				      sizetype, complain);
 }
 
 /* Returns the scope (if any) in which the entity declared by
@@ -13413,6 +13421,7 @@ static tree
 create_array_type_for_decl (tree name, tree type, tree size, location_t loc)
 {
   tree itype = NULL_TREE;
+	tree size_type = targetm.addr_space.size_type (TYPE_ADDR_SPACE (type));
 
   /* If things have already gone awry, bail now.  */
   if (type == error_mark_node || size == error_mark_node)
@@ -13491,8 +13500,8 @@ create_array_type_for_decl (tree name, tree type, tree size, location_t loc)
   /* Figure out the index type for the array.  */
   if (size)
     {
-      itype = compute_array_index_type_loc (loc, name, size,
-					    tf_warning_or_error);
+      itype = compute_array_index_type_loc (loc, name, size, size_type,
+					 tf_warning_or_error);
       if (type_uses_auto (type)
 	  && variably_modified_type_p (itype, /*fn=*/NULL_TREE))
 	{
