@@ -67,6 +67,14 @@
       if (ia16_memmodel >= IA16_MODEL_COMPACT	\
 	  && ia16_memmodel != IA16_MODEL_MEDIUM)	\
 	builtin_define ("__FAR_DATA__");		\
+      /* In C, __far is a named address space keyword	\
+	 (registered via REGISTER_TARGET_PRAGMAS).	\
+	 In C++, named address spaces are not supported \
+	 so provide __far as a macro using the GCC	\
+	 address_space attribute.  */			\
+      if (c_dialect_cxx ())				\
+	builtin_define ("__far=__attribute__"		\
+			"((address_space(1)))");	\
     }							\
   while (0)
 
@@ -141,6 +149,9 @@
 
 /* Far pointer mode: segment:offset = 32 bits.  */
 #define ADDR_SPACE_FAR		1
+
+extern void ia16_register_pragmas (void);
+#define REGISTER_TARGET_PRAGMAS() ia16_register_pragmas ()
 
 #define PROMOTE_MODE(MODE, UNSIGNEDP, TYPE)	\
   if (GET_MODE_CLASS (MODE) == MODE_INT		\

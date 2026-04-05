@@ -2395,6 +2395,8 @@ ia64*-*-elf*)
 ia16-*-elf)
 	tm_file="elfos.h newlib-stdint.h ${tm_file}"
 	tmake_file="${tmake_file} ia16/t-ia16"
+	c_target_objs="ia16-c.o"
+	cxx_target_objs="ia16-c.o"
 	use_gcc_stdint=wrap
 	;;
 ia64*-*-freebsd*)

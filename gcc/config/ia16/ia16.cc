@@ -542,6 +542,237 @@ ia16_legitimate_constant_p (machine_mode mode ATTRIBUTE_UNUSED, rtx x)
 #undef  TARGET_LEGITIMATE_CONSTANT_P
 #define TARGET_LEGITIMATE_CONSTANT_P ia16_legitimate_constant_p
 
+static rtx ia16_legitimize_address (rtx, rtx, machine_mode);
+
+/* --------------------------------------------------------------------------
+   Far Pointer / Named Address Space Support
+
+   ADDR_SPACE_FAR (1) represents segmented far pointers (segment:offset).
+   A far pointer is SImode (32 bits): low 16 bits = offset, high 16 = segment.
+   Far memory access uses LES to load the pointer into ES:reg, then
+   accesses memory with an %es: segment override prefix.
+   -------------------------------------------------------------------------- */
+
+/* Accept both near and far pointer machine modes.  Generic code can ask
+  about either without carrying an explicit address-space tag.  */
+static bool
+ia16_valid_pointer_mode (scalar_int_mode mode)
+{
+  return mode == HImode || mode == SImode;
+}
+
+#undef  TARGET_VALID_POINTER_MODE
+#define TARGET_VALID_POINTER_MODE ia16_valid_pointer_mode
+
+/* Return the pointer mode for the given address space.  */
+static scalar_int_mode
+ia16_addr_space_pointer_mode (addr_space_t addrspace)
+{
+  if (addrspace == ADDR_SPACE_FAR)
+    return SImode;
+  return HImode;
+}
+
+#undef  TARGET_ADDR_SPACE_POINTER_MODE
+#define TARGET_ADDR_SPACE_POINTER_MODE ia16_addr_space_pointer_mode
+
+#undef  TARGET_ADDR_SPACE_ADDRESS_MODE
+#define TARGET_ADDR_SPACE_ADDRESS_MODE ia16_addr_space_pointer_mode
+
+/* Validate pointer modes for each address space precisely.  */
+static bool
+ia16_addr_space_valid_pointer_mode (scalar_int_mode mode,
+				    addr_space_t addrspace)
+{
+  return mode == ia16_addr_space_pointer_mode (addrspace);
+}
+
+#undef  TARGET_ADDR_SPACE_VALID_POINTER_MODE
+#define TARGET_ADDR_SPACE_VALID_POINTER_MODE ia16_addr_space_valid_pointer_mode
+
+/* Near address space is a subset of far.  */
+static bool
+ia16_addr_space_subset_p (addr_space_t subset, addr_space_t superset)
+{
+  if (subset == superset)
+    return true;
+  /* Near (generic) is a subset of far.  */
+  return (subset == ADDR_SPACE_GENERIC && superset == ADDR_SPACE_FAR);
+}
+
+#undef  TARGET_ADDR_SPACE_SUBSET_P
+#define TARGET_ADDR_SPACE_SUBSET_P ia16_addr_space_subset_p
+
+enum ia16_default_segment
+{
+  IA16_SEG_DS,
+  IA16_SEG_SS,
+  IA16_SEG_CS
+};
+
+/* Return true if OP is a symbolic constant that can use the target-specific
+   far-pointer relocations.  */
+static bool
+ia16_symbolic_far_constant_p (rtx op)
+{
+  rtx base = op;
+  rtx offset = const0_rtx;
+
+  if (GET_CODE (op) == CONST)
+    split_const (op, &base, &offset);
+
+  return SYMBOL_REF_P (base) || LABEL_REF_P (base);
+}
+
+/* Emit one half of a segmented far symbolic constant using segelf syntax.  */
+static void
+ia16_output_far_constant_word (FILE *file, rtx x, bool segment_p)
+{
+  rtx base = x;
+  rtx offset = const0_rtx;
+
+  if (GET_CODE (x) == CONST)
+    split_const (x, &base, &offset);
+
+  fputs ("\t.word\t", file);
+  output_addr_const (file, base);
+  fputs (segment_p ? "@SEG" : "@OFF", file);
+  if (!segment_p && offset != const0_rtx)
+    {
+      if (CONST_INT_P (offset) && INTVAL (offset) > 0)
+        fputc ('+', file);
+      output_addr_const (file, offset);
+    }
+  fputc ('\n', file);
+}
+
+/* Determine which segment register a near address naturally uses.
+   Globals and most generic near pointers are DS-relative.  Addresses based
+   on the stack or frame pointers are SS-relative.  Function addresses are
+   code-segment relative.  */
+static enum ia16_default_segment
+ia16_near_address_segment (rtx op, tree from_type)
+{
+  tree pointed_to = TREE_TYPE (from_type);
+  rtx base = NULL_RTX;
+  rtx index = NULL_RTX;
+  rtx disp = NULL_RTX;
+
+  if (TREE_CODE (pointed_to) == FUNCTION_TYPE
+      || TREE_CODE (pointed_to) == METHOD_TYPE)
+    return IA16_SEG_CS;
+
+  if (REG_P (op))
+    {
+      unsigned int regno = REGNO (op);
+
+      if (regno == SP_REG || regno == BP_REG
+	  || regno == AP_REG || regno == FP_REG)
+	return IA16_SEG_SS;
+
+	return IA16_SEG_DS;
+    }
+
+  if (ia16_decompose_address (op, &base, &index, &disp))
+    {
+      if (base && REG_P (base))
+	{
+	  unsigned int regno = REGNO (base);
+
+	  if (regno == SP_REG || regno == BP_REG
+	      || regno == AP_REG || regno == FP_REG)
+	    return IA16_SEG_SS;
+	}
+    }
+
+  return IA16_SEG_DS;
+}
+
+/* Convert between near and far address spaces.  */
+static rtx
+ia16_addr_space_convert (rtx op, tree from_type, tree to_type)
+{
+  addr_space_t from_as = TYPE_ADDR_SPACE (TREE_TYPE (from_type));
+  addr_space_t to_as = TYPE_ADDR_SPACE (TREE_TYPE (to_type));
+
+  if (to_as == ADDR_SPACE_FAR && from_as != ADDR_SPACE_FAR)
+    {
+      /* Near → far: keep the near offset in the low word and materialize
+   the appropriate segment in the high word.  Symbolic constants use
+   linker relocations; register-derived near addresses use the current
+   default segment register.  */
+      if (ia16_symbolic_far_constant_p (op))
+	{
+    if (!currently_expanding_to_rtl
+        || crtl == NULL
+        || !crtl->emit.regno_pointer_align_length)
+      return gen_rtx_UNSPEC (SImode, gen_rtvec (1, op), UNSPEC_FAR_PTR);
+
+	  rtx result = gen_reg_rtx (SImode);
+	  rtx low = ia16_split_si_half (result, 0);
+	  rtx high = ia16_split_si_half (result, 1);
+
+	  emit_insn (gen_load_off16 (low, op));
+	  emit_insn (gen_load_seg16 (high, op));
+	  return result;
+	}
+
+      rtx result = gen_reg_rtx (SImode);
+      rtx low = ia16_split_si_half (result, 0);
+      rtx high = ia16_split_si_half (result, 1);
+
+      emit_move_insn (low, op);
+
+      switch (ia16_near_address_segment (op, from_type))
+  {
+  case IA16_SEG_DS:
+    emit_insn (gen_store_ds (high));
+    break;
+
+  case IA16_SEG_SS:
+    emit_insn (gen_store_ss (high));
+    break;
+
+  case IA16_SEG_CS:
+    emit_insn (gen_store_cs (high));
+    break;
+  }
+
+      return result;
+    }
+  else if (to_as != ADDR_SPACE_FAR && from_as == ADDR_SPACE_FAR)
+    {
+      /* Far → near: truncate to 16-bit offset (drop segment).  */
+      rtx result = gen_reg_rtx (HImode);
+      emit_move_insn (result, gen_lowpart (HImode, op));
+      return result;
+    }
+
+  gcc_unreachable ();
+}
+
+#undef  TARGET_ADDR_SPACE_CONVERT
+#define TARGET_ADDR_SPACE_CONVERT ia16_addr_space_convert
+
+/* Validate a far address.  A far memory access loads the segment:offset
+   pair into ES:reg, then uses %es:(%reg) addressing.  The address
+   inside the MEM is still the offset portion — the segment override
+   is handled in the output.  For now, accept the same address forms
+   as near addresses.  */
+static bool
+ia16_addr_space_legitimate_address_p (machine_mode mode, rtx addr,
+				      bool strict, addr_space_t as,
+				      code_helper ch)
+{
+  if (as == ADDR_SPACE_FAR)
+    return REG_P (addr) && GET_MODE (addr) == SImode;
+  return ia16_legitimate_address_p (mode, addr, strict, ch);
+}
+
+#undef  TARGET_ADDR_SPACE_LEGITIMATE_ADDRESS_P
+#define TARGET_ADDR_SPACE_LEGITIMATE_ADDRESS_P \
+  ia16_addr_space_legitimate_address_p
+
 /* Try to rewrite an invalid address into a valid one.
    The 8086 has very limited addressing modes, so complex addresses
    need to be decomposed into register loads.  */
@@ -639,6 +870,29 @@ ia16_legitimize_address (rtx x, rtx oldx ATTRIBUTE_UNUSED,
 
 #undef  TARGET_LEGITIMIZE_ADDRESS
 #define TARGET_LEGITIMIZE_ADDRESS ia16_legitimize_address
+
+/* Keep far addresses in one SImode pseudo so segment and offset stay
+   coupled until the far move expanders split them into ES and offset.  */
+static rtx
+ia16_addr_space_legitimize_address (rtx x, rtx oldx,
+				    machine_mode mode,
+				    addr_space_t as)
+{
+  if (as == ADDR_SPACE_FAR)
+    {
+      gcc_assert (GET_MODE (x) == SImode);
+
+      if (!REG_P (x))
+	x = force_reg (SImode, x);
+
+      return x;
+    }
+
+  return ia16_legitimize_address (x, oldx, mode);
+}
+
+#undef  TARGET_ADDR_SPACE_LEGITIMIZE_ADDRESS
+#define TARGET_ADDR_SPACE_LEGITIMIZE_ADDRESS ia16_addr_space_legitimize_address
 
 /* Worker for LEGITIMIZE_RELOAD_ADDRESS.
 
@@ -1077,6 +1331,12 @@ ia16_print_operand (FILE *file, rtx x, int code)
       /* Print operand without '$' prefix (for call/jmp targets).  */
       break;
 
+    case 'O':
+    case 'S':
+      /* Print a far symbolic immediate with an explicit relocation
+	 modifier.  */
+      break;
+
     case 0:
       /* Default: print operand normally.  */
       break;
@@ -1105,10 +1365,33 @@ ia16_print_operand (FILE *file, rtx x, int code)
     }
   else if (MEM_P (x))
     {
+      /* Far address space: emit %es: segment override prefix.  */
+      if (MEM_ADDR_SPACE (x) == ADDR_SPACE_FAR)
+	fputs ("%es:", file);
       ia16_print_operand_address (file, GET_MODE (x), XEXP (x, 0));
     }
   else
     {
+      if ((code == 'O' || code == 'S') && ia16_symbolic_far_constant_p (x))
+  {
+    rtx base = x;
+    rtx offset = const0_rtx;
+
+    if (GET_CODE (x) == CONST)
+      split_const (x, &base, &offset);
+
+    fputc ('$', file);
+    output_addr_const (file, base);
+    fputs (code == 'O' ? "@OFF" : "@SEG", file);
+    if (code == 'O' && offset != const0_rtx)
+      {
+        if (CONST_INT_P (offset) && INTVAL (offset) > 0)
+    fputc ('+', file);
+        output_addr_const (file, offset);
+      }
+    return;
+  }
+
       /* In AT&T syntax, immediates need a '$' prefix.
 	 The 'P' modifier suppresses '$' (for call/jmp targets).  */
       if (code != 'P'
@@ -1154,6 +1437,27 @@ ia16_print_operand_address (FILE *file, machine_mode mode ATTRIBUTE_UNUSED,
 
 #undef  TARGET_PRINT_OPERAND_ADDRESS
 #define TARGET_PRINT_OPERAND_ADDRESS ia16_print_operand_address
+
+/* Emit static segmented far-pointer constants as offset and segment words.  */
+static bool
+ia16_assemble_integer (rtx x, unsigned int size, int aligned_p)
+{
+  if (size == 4
+      && GET_CODE (x) == UNSPEC
+      && XINT (x, 1) == UNSPEC_FAR_PTR)
+    {
+      rtx op = XVECEXP (x, 0, 0);
+
+      ia16_output_far_constant_word (asm_out_file, op, false);
+      ia16_output_far_constant_word (asm_out_file, op, true);
+      return true;
+    }
+
+  return default_assemble_integer (x, size, aligned_p);
+}
+
+#undef  TARGET_ASM_INTEGER
+#define TARGET_ASM_INTEGER ia16_assemble_integer
 
 /* Canonicalize add/sub immediates so negative constants use the opposite
    opcode with a positive magnitude.  This keeps stack adjustments and other

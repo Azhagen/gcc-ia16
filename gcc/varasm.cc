@@ -5158,6 +5158,21 @@ initializer_constant_valid_p_1 (tree value, tree endtype, tree *cache)
 	return initializer_constant_valid_p_1 (src, endtype, cache);
       }
 
+    case ADDR_SPACE_CONVERT_EXPR:
+      {
+  tree src = TREE_OPERAND (value, 0);
+  tree src_type = TREE_TYPE (src);
+  tree dest_type = TREE_TYPE (value);
+
+  if (POINTER_TYPE_P (dest_type)
+      && POINTER_TYPE_P (src_type)
+      && targetm.addr_space.valid_pointer_mode
+     (SCALAR_INT_TYPE_MODE (dest_type),
+      TYPE_ADDR_SPACE (TREE_TYPE (dest_type))))
+    return initializer_constant_valid_p_1 (src, endtype, cache);
+      }
+      break;
+
     CASE_CONVERT:
       {
 	tree src = TREE_OPERAND (value, 0);
@@ -5453,7 +5468,7 @@ output_constant (tree exp, unsigned HOST_WIDE_INT size, unsigned int align,
      to the address of some declaration somewhere.  If the target says
      the mode is valid for pointers, assume the target has a way of
      resolving it.  */
-  if (TREE_CODE (exp) == NOP_EXPR
+    if (TREE_CODE (exp) == NOP_EXPR
       && POINTER_TYPE_P (TREE_TYPE (exp))
       && targetm.addr_space.valid_pointer_mode
 	   (SCALAR_INT_TYPE_MODE (TREE_TYPE (exp)),
