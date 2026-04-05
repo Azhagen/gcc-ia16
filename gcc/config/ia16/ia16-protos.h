@@ -40,6 +40,7 @@ extern bool ia16_legitimize_reload_address (rtx *, machine_mode, int, int,
 extern rtx ia16_complex_part (rtx, machine_mode, unsigned int);
 extern rtx ia16_subword (rtx, machine_mode, unsigned int);
 extern void ia16_emit_huge_address_parts (rtx, rtx, rtx);
+extern rtx ia16_force_huge_address (rtx);
 extern void ia16_emit_multiword_move (rtx *, machine_mode);
 extern void ia16_emit_multiword_push (rtx, machine_mode);
 extern rtx ia16_split_si_half (rtx, int);

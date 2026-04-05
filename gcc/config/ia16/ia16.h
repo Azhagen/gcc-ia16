@@ -159,8 +159,12 @@
 #define ADDR_SPACE_FAR		1
 #define ADDR_SPACE_HUGE		2
 
+extern bool ia16_constant_address_p (rtx);
 extern void ia16_register_pragmas (void);
 #define REGISTER_TARGET_PRAGMAS() ia16_register_pragmas ()
+
+#undef  CONSTANT_ADDRESS_P
+#define CONSTANT_ADDRESS_P(X) ia16_constant_address_p (X)
 
 #define PROMOTE_MODE(MODE, UNSIGNEDP, TYPE)	\
   if (GET_MODE_CLASS (MODE) == MODE_INT		\
@@ -192,7 +196,6 @@ extern void ia16_register_pragmas (void);
 #define WORD_REGISTER_OPERATIONS 1
 
 #define MOVE_MAX		2
-#define SLOW_BYTE_ACCESS	0
 
 /* --------------------------------------------------------------------------
    Register Usage

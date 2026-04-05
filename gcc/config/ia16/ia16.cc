@@ -564,12 +564,40 @@ ia16_segmented_addr_space_p (addr_space_t addrspace)
   return addrspace == ADDR_SPACE_FAR || addrspace == ADDR_SPACE_HUGE;
 }
 
+/* Treat symbolic SImode segmented addresses as non-constant addresses so
+   generic memory_address_addr_space processing doesn't force them through a
+   plain movsi before the IA-16 address-space hooks can canonicalize them.  */
+bool
+ia16_constant_address_p (rtx x)
+{
+  if (GET_MODE (x) == SImode)
+    {
+      if (SYMBOL_REF_P (x) || LABEL_REF_P (x))
+        return false;
+
+      if (GET_CODE (x) == CONST)
+        {
+          rtx base = x;
+          rtx offset = const0_rtx;
+
+          split_const (x, &base, &offset);
+          if ((SYMBOL_REF_P (base) || LABEL_REF_P (base)) && CONST_INT_P (offset))
+            return false;
+        }
+
+      if (GET_CODE (x) == UNSPEC
+          && (XINT (x, 1) == UNSPEC_FAR_PTR || XINT (x, 1) == UNSPEC_HUGE_PTR))
+        return false;
+    }
+
+  return CONSTANT_P (x) && GET_CODE (x) != CONST_DOUBLE;
+}
+
 static bool
 ia16_static_pointer_constant_context_p (void)
 {
   return (!currently_expanding_to_rtl
-	  || crtl == NULL
-	  || !crtl->emit.regno_pointer_align_length);
+    || !crtl->emit.regno_pointer_align_length);
 }
 
 /* Accept both near and segmented 32-bit pointer machine modes.  Generic code
@@ -647,6 +675,19 @@ ia16_addr_space_ptrdiff_type (addr_space_t addrspace)
 #undef  TARGET_ADDR_SPACE_PTRDIFF_TYPE
 #define TARGET_ADDR_SPACE_PTRDIFF_TYPE ia16_addr_space_ptrdiff_type
 
+/* Implement TARGET_ADDR_SPACE_SIZE_TYPE.  */
+static tree
+ia16_addr_space_size_type (addr_space_t as)
+{
+  if (as == ADDR_SPACE_HUGE)
+    return long_unsigned_type_node;
+
+  return sizetype;
+}
+
+#undef  TARGET_ADDR_SPACE_SIZE_TYPE
+#define TARGET_ADDR_SPACE_SIZE_TYPE ia16_addr_space_size_type
+
 /* Return true if OP is a symbolic constant that can use the target-specific
    segmented-pointer handling.  */
 static bool
@@ -676,7 +717,6 @@ ia16_underlying_symbolic_ptr_constant (rtx op)
 
   return op;
 }
-
 /* Emit one half of a segmented far symbolic constant using segelf syntax.  */
 static void
 ia16_output_far_constant_word (FILE *file, rtx x, bool segment_p)
@@ -862,6 +902,19 @@ ia16_emit_symbolic_huge_pointer (rtx op)
   return ia16_emit_huge_pointer (offset, segment);
 }
 
+/* Materialize a huge address in a register while preserving symbolic
+   constants through the target-specific huge-pointer constructor.  */
+rtx
+ia16_force_huge_address (rtx op)
+{
+  gcc_assert (GET_MODE (op) == SImode);
+
+  if (ia16_symbolic_ptr_constant_p (op))
+    return ia16_emit_symbolic_huge_pointer (op);
+
+  return force_reg (SImode, op);
+}
+
 /* Convert between near, far, and huge address spaces.  */
 static rtx
 ia16_addr_space_convert (rtx op, tree from_type, tree to_type)
@@ -943,6 +996,147 @@ ia16_addr_space_convert (rtx op, tree from_type, tree to_type)
 
 #undef  TARGET_ADDR_SPACE_CONVERT
 #define TARGET_ADDR_SPACE_CONVERT ia16_addr_space_convert
+
+static bool
+ia16_huge_object_p (tree decl)
+{
+  return decl != NULL_TREE
+    && VAR_P (decl)
+    && TREE_TYPE (decl) != error_mark_node
+    && TYPE_ADDR_SPACE (TREE_TYPE (decl)) == ADDR_SPACE_HUGE;
+}
+
+static const char *
+ia16_huge_section_prefix (tree decl, int reloc, bool one_only)
+{
+  switch (categorize_decl_for_section (decl, reloc))
+    {
+    case SECCAT_RODATA:
+    case SECCAT_RODATA_MERGE_STR:
+    case SECCAT_RODATA_MERGE_STR_INIT:
+    case SECCAT_RODATA_MERGE_CONST:
+      return one_only ? ".r.huge" : ".rodata.huge";
+
+    case SECCAT_DATA:
+      if (DECL_PERSISTENT_P (decl))
+        return one_only ? ".p.huge" : ".persistent.huge";
+      return one_only ? ".d.huge" : ".data.huge";
+
+    case SECCAT_DATA_REL:
+      return one_only ? ".d.rel.huge" : ".data.rel.huge";
+
+    case SECCAT_DATA_REL_LOCAL:
+      return one_only ? ".d.rel.local.huge" : ".data.rel.local.huge";
+
+    case SECCAT_DATA_REL_RO:
+      return one_only ? ".d.rel.ro.huge" : ".data.rel.ro.huge";
+
+    case SECCAT_DATA_REL_RO_LOCAL:
+      return one_only ? ".d.rel.ro.local.huge"
+                      : ".data.rel.ro.local.huge";
+
+    case SECCAT_BSS:
+      if (DECL_NOINIT_P (decl))
+        return one_only ? ".n.huge" : ".noinit.huge";
+      return one_only ? ".b.huge" : ".bss.huge";
+
+    case SECCAT_TEXT:
+    case SECCAT_SRODATA:
+    case SECCAT_SDATA:
+    case SECCAT_SBSS:
+    case SECCAT_TDATA:
+    case SECCAT_TBSS:
+      return NULL;
+
+    default:
+      gcc_unreachable ();
+    }
+}
+
+/* Follow a transparent assembler-name alias chain to its final target.  */
+static tree
+ia16_ultimate_transparent_alias_target (tree alias)
+{
+  tree target = alias;
+
+  while (IDENTIFIER_TRANSPARENT_ALIAS (target))
+    {
+      gcc_assert (TREE_CHAIN (target));
+      target = TREE_CHAIN (target);
+    }
+
+  gcc_assert (!IDENTIFIER_TRANSPARENT_ALIAS (target)
+	      && !TREE_CHAIN (target));
+  return target;
+}
+
+static section *
+ia16_select_section (tree decl, int reloc, unsigned HOST_WIDE_INT align)
+{
+  if (DECL_P (decl) && ia16_huge_object_p (decl))
+    {
+      const char *prefix = ia16_huge_section_prefix (decl, reloc, false);
+      if (prefix)
+        return get_named_section (decl, prefix, reloc);
+    }
+
+  return default_elf_select_section (decl, reloc, align);
+}
+
+#undef  TARGET_ASM_SELECT_SECTION
+#define TARGET_ASM_SELECT_SECTION ia16_select_section
+
+static void
+ia16_unique_section (tree decl, int reloc)
+{
+  if (ia16_huge_object_p (decl))
+    {
+      bool one_only = DECL_ONE_ONLY (decl) && !HAVE_COMDAT_GROUP;
+      const char *prefix = ia16_huge_section_prefix (decl, reloc, one_only);
+
+      if (prefix)
+        {
+          const char *name, *linkonce;
+          char *string;
+          tree id;
+
+          id = DECL_ASSEMBLER_NAME (decl);
+          id = ia16_ultimate_transparent_alias_target (id);
+          name = IDENTIFIER_POINTER (id);
+          name = targetm.strip_name_encoding (name);
+          linkonce = one_only ? ".gnu.linkonce" : "";
+          string = ACONCAT ((linkonce, prefix, ".", name, NULL));
+          set_decl_section_name (decl, string);
+          return;
+        }
+    }
+
+  default_unique_section (decl, reloc);
+}
+
+#undef  TARGET_ASM_UNIQUE_SECTION
+#define TARGET_ASM_UNIQUE_SECTION ia16_unique_section
+
+static unsigned int
+ia16_section_type_flags (tree decl, const char *name, int reloc)
+{
+  unsigned int flags = default_section_type_flags (decl, name, reloc);
+
+  if (strcmp (name, ".noinit.huge") == 0
+      || startswith (name, ".noinit.huge.")
+      || startswith (name, ".gnu.linkonce.n.huge."))
+    flags |= SECTION_WRITE | SECTION_BSS | SECTION_NOTYPE;
+
+  if (strcmp (name, ".persistent.huge") == 0
+      || startswith (name, ".persistent.huge.")
+      || startswith (name, ".gnu.linkonce.p.huge."))
+    flags |= SECTION_WRITE | SECTION_NOTYPE;
+
+  return flags;
+}
+
+#undef  TARGET_SECTION_TYPE_FLAGS
+#define TARGET_SECTION_TYPE_FLAGS ia16_section_type_flags
 
 /* Validate a far/huge address.  Far addresses are already stored as
    segment:offset pairs; huge addresses store linear values and are
@@ -1067,12 +1261,27 @@ ia16_addr_space_legitimize_address (rtx x, rtx oldx,
 				    machine_mode mode,
 				    addr_space_t as)
 {
-  if (ia16_segmented_addr_space_p (as))
+  if (as == ADDR_SPACE_HUGE)
     {
       gcc_assert (GET_MODE (x) == SImode);
 
       if (!REG_P (x))
-	x = force_reg (SImode, x);
+	x = ia16_force_huge_address (x);
+
+	return x;
+    }
+
+  if (as == ADDR_SPACE_FAR)
+    {
+      gcc_assert (GET_MODE (x) == SImode);
+
+      if (!REG_P (x))
+	{
+	  if (ia16_symbolic_ptr_constant_p (x))
+	    x = ia16_emit_symbolic_far_pointer (x);
+	  else
+	    x = force_reg (SImode, x);
+	}
 
       return x;
     }
@@ -1739,6 +1948,8 @@ ia16_output_addsub_insn (machine_mode mode, bool subtract_p, rtx *operands)
 const char *
 ia16_output_move_insn (rtx *operands, machine_mode mode)
 {
+  (void) operands;
+
   if (mode == QImode)
     return "movb\t%1, %0";
   else
