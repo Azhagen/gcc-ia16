@@ -3514,6 +3514,15 @@ converted to pointers to a subset address space via explicit casts.",
  bool, (addr_space_t subset, addr_space_t superset),
  default_addr_space_subset_p)
 
+/* Type to use for pointer differences in a named address space.  */
+DEFHOOK
+(ptrdiff_type,
+ "Define this to return the tree type to use for the result of\n\
+subtracting two pointers in the named address space @var{as}.  The\n\
+default version of this hook returns @code{ptrdiff_type_node}.",
+ tree, (addr_space_t as),
+ default_addr_space_ptrdiff_type)
+
 /* True if 0 is a valid address in the address space, or false if
    0 is a NULL in the address space.  */
 DEFHOOK

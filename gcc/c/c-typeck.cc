@@ -5309,17 +5309,19 @@ parser_build_binary_op (location_t location, enum tree_code code,
 }
 
 /* Return a tree for the difference of pointers OP0 and OP1.
-   The resulting tree has type ptrdiff_t.  If POINTER_SUBTRACT sanitization is
-   enabled, assign to INSTRUMENT_EXPR call to libsanitizer.  */
+  The resulting tree has the target-selected pointer-difference type for the
+  common address space of the operands.  If POINTER_SUBTRACT sanitization is
+  enabled, assign to INSTRUMENT_EXPR call to libsanitizer.  */
 
 static tree
 pointer_diff (location_t loc, tree op0, tree op1, tree *instrument_expr)
 {
-  tree restype = ptrdiff_type_node;
   tree result, inttype;
 
   addr_space_t as0 = TYPE_ADDR_SPACE (TREE_TYPE (TREE_TYPE (op0)));
   addr_space_t as1 = TYPE_ADDR_SPACE (TREE_TYPE (TREE_TYPE (op1)));
+  addr_space_t as_common = as0;
+  tree restype;
   tree target_type = TREE_TYPE (TREE_TYPE (op0));
   tree orig_op0 = op0;
   tree orig_op1 = op1;
@@ -5342,6 +5344,8 @@ pointer_diff (location_t loc, tree op0, tree op1, tree *instrument_expr)
       op0 = convert (common_type, op0);
       op1 = convert (common_type, op1);
     }
+
+  restype = targetm.addr_space.ptrdiff_type (as_common);
 
   /* Determine integer type result of the subtraction.  This will usually
      be the same as the result type (ptrdiff_t), but may need to be a wider

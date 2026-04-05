@@ -1771,6 +1771,15 @@ default_addr_space_subset_p (addr_space_t subset, addr_space_t superset)
   return (subset == superset);
 }
 
+/* The default hook for the result type of pointer subtraction within a
+   named address space.  */
+
+tree
+default_addr_space_ptrdiff_type (addr_space_t as ATTRIBUTE_UNUSED)
+{
+  return ptrdiff_type_node;
+}
+
 /* The default hook for determining if 0 within a named address
    space is a valid address.  */
 

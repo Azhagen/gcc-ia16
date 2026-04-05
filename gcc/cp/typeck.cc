@@ -7099,16 +7099,17 @@ cp_pointer_int_sum (location_t loc, enum tree_code resultcode, tree ptrop,
 }
 
 /* Return a tree for the difference of pointers OP0 and OP1.
-   The resulting tree has type int.  If POINTER_SUBTRACT sanitization is
-   enabled, assign to INSTRUMENT_EXPR call to libsanitizer.  */
+   The resulting tree has the target-selected pointer-difference type for the
+   common address space represented by PTRTYPE.  If POINTER_SUBTRACT
+   sanitization is enabled, assign to INSTRUMENT_EXPR call to libsanitizer.  */
 
 static tree
 pointer_diff (location_t loc, tree op0, tree op1, tree ptrtype,
 	      tsubst_flags_t complain, tree *instrument_expr)
 {
   tree result, inttype;
-  tree restype = ptrdiff_type_node;
   tree target_type = TREE_TYPE (ptrtype);
+  tree restype = targetm.addr_space.ptrdiff_type (TYPE_ADDR_SPACE (target_type));
 
   if (!complete_type_or_maybe_complain (target_type, NULL_TREE, complain))
     return error_mark_node;

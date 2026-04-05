@@ -213,6 +213,7 @@ extern bool default_addr_space_legitimate_address_p (machine_mode, rtx, bool,
 extern rtx default_addr_space_legitimize_address (rtx, rtx, machine_mode,
 						  addr_space_t);
 extern bool default_addr_space_subset_p (addr_space_t, addr_space_t);
+extern tree default_addr_space_ptrdiff_type (addr_space_t);
 extern bool default_addr_space_zero_address_valid (addr_space_t);
 extern int default_addr_space_debug (addr_space_t);
 extern void default_addr_space_diagnose_usage (addr_space_t, location_t);
