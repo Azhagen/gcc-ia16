@@ -89,7 +89,9 @@
 #undef  ENDFILE_SPEC
 #define ENDFILE_SPEC ""
 
-#define ASM_SPEC "%{mcpu=*:-mcpu=%*}"
+/* The backend emits a .arch directive itself; the ia16 assembler does not
+   accept -mcpu=... command-line options.  */
+#define ASM_SPEC ""
 
 #define LINK_SPEC "%{!T*:-T ia16.ld%s}"
 
@@ -104,14 +106,13 @@
 #define BYTES_BIG_ENDIAN	0
 #define WORDS_BIG_ENDIAN	0
 
-#ifdef IN_LIBGCC2
-#define UNITS_PER_WORD		4
-#ifndef LIBGCC2_UNITS_PER_WORD
-#define LIBGCC2_UNITS_PER_WORD	4
-#endif
-#else
 #define UNITS_PER_WORD		2
-#endif
+
+/* libgcc2.c uses LIBGCC2_UNITS_PER_WORD to size its Wtype (word)
+   and DWtype (double-word).  With LIBGCC2_UNITS_PER_WORD=2, Wtype
+   is HImode (16-bit) and DWtype is SImode (32-bit), so libgcc2
+   generates the SI routines we need (__mulsi3, __divsi3, etc.).  */
+#define LIBGCC2_UNITS_PER_WORD	2
 
 #define SHORT_TYPE_SIZE		16
 #define INT_TYPE_SIZE		16
@@ -189,17 +190,15 @@
    BX        3       %bx      Base register
    SI        4       %si      Source index
    DI        5       %di      Destination index
-   BP        6       %bp      Frame pointer
+   BP        6       %bp      Hard frame pointer
    SP        7       %sp      Stack pointer
    ES        8       %es      Extra segment
    CC        9       cc       Condition codes (virtual)
    AP       10       argp     Arg pointer (virtual)
+  FP       11       frame    Frame pointer (virtual)
 
-   Byte sub-registers (low byte of AX/DX/CX/BX):
-   AL       11       %al
-   DL       12       %dl
-   CL       13       %cl
-   BL       14       %bl
+  Byte names like %al/%ah are assembler aliases for AX/DX/CX/BX views,
+  not separate hard registers.
    -------------------------------------------------------------------------- */
 
 /* Hard register numbers.  */
@@ -214,14 +213,15 @@
 #define ES_REG		8
 #define CC_REG		9
 #define AP_REG		10  /* Arg pointer (virtual).  */
+#define FP_REG		11  /* Frame pointer (virtual).  */
 
-#define FIRST_PSEUDO_REGISTER 11
+#define FIRST_PSEUDO_REGISTER 12
 
 /* Register names for the assembler.  */
 #define REGISTER_NAMES						\
 {								\
   "%ax", "%dx", "%cx", "%bx", "%si", "%di", "%bp", "%sp",	\
-  "%es", "cc", "argp"						\
+  "%es", "cc", "argp", "frame"				\
 }
 
 /* AX, BX, CX, and DX have byte-addressable low and high halves.
@@ -247,10 +247,10 @@ enum reg_class
   SIREG,	/* SI only (string ops source).  */
   DIREG,	/* DI only (string ops dest).  */
   INDEX_REGS,	/* SI, DI (index registers for addressing).  */
-  BASE_INDEX_REGS, /* BX, BP (base when index is present).  */
-  BASE_REGS,	/* BX, SI, DI, BP (valid base for addressing).  */
+  BASE_INDEX_REGS, /* BX, BP, AP, FP (base when index is present).  */
+  BASE_REGS,	/* BX, SI, DI, BP, AP, FP (valid base for addressing).  */
   QI_REGS,	/* AX, DX, CX, BX (byte-capable).  */
-  GENERAL_REGS,	/* AX, BX, CX, DX, SI, DI, BP, SP.  */
+  GENERAL_REGS,	/* AX, BX, CX, DX, SI, DI, BP, SP, AP, FP.  */
   SEG_REGS,	/* ES.  */
   ALL_REGS,
   LIM_REG_CLASSES
@@ -277,8 +277,8 @@ enum reg_class
   "ALL_REGS"					\
 }
 
-/*  Registers:        AP CC ES SP BP DI SI BX CX DX AX
-    Bit positions:    10  9  8  7  6  5  4  3  2  1  0  */
+/*  Registers:        FP AP CC ES SP BP DI SI BX CX DX AX
+    Bit positions:    11 10  9  8  7  6  5  4  3  2  1  0  */
 #define REG_CLASS_CONTENTS						\
 {									\
   { 0x0000 },	/* NO_REGS     */					\
@@ -290,12 +290,12 @@ enum reg_class
   { 0x0010 },	/* SIREG       - SI */					\
   { 0x0020 },	/* DIREG       - DI */					\
   { 0x0030 },	/* INDEX_REGS  - SI, DI */				\
-  { 0x0048 },	/* BASE_INDEX_REGS - BX, BP */				\
-  { 0x0078 },	/* BASE_REGS   - BX, SI, DI, BP */			\
+  { 0x0C48 },	/* BASE_INDEX_REGS - BX, BP, AP, FP */			\
+  { 0x0C78 },	/* BASE_REGS   - BX, SI, DI, BP, AP, FP */		\
   { 0x000F },	/* QI_REGS     - AX, DX, CX, BX */			\
-  { 0x00FF },	/* GENERAL_REGS - AX, DX, CX, BX, SI, DI, BP, SP */	\
+  { 0x0CFF },	/* GENERAL_REGS - AX, DX, CX, BX, SI, DI, BP, SP, AP, FP */ \
   { 0x0100 },	/* SEG_REGS    - ES */					\
-  { 0x07FF }	/* ALL_REGS    */					\
+  { 0x0FFF }	/* ALL_REGS    */					\
 }
 
 #define GENERAL_REGS	GENERAL_REGS
@@ -313,14 +313,16 @@ enum reg_class
    an index register is present.  */
 #define REGNO_MODE_CODE_OK_FOR_BASE_P(REGNO, MODE, AS, OUTER, INDEX)	\
   (((INDEX) == REG)							\
-   ? ((REGNO) == BX_REG || (REGNO) == BP_REG				\
+  ? ((REGNO) == BX_REG || (REGNO) == BP_REG				\
+    || (REGNO) == AP_REG || (REGNO) == FP_REG			\
       || (unsigned)(REGNO) >= FIRST_PSEUDO_REGISTER)			\
    : REGNO_OK_FOR_BASE_P (REGNO))
 
 #define INDEX_REG_CLASS	INDEX_REGS
 
 #define STACK_POINTER_REGNUM	SP_REG
-#define FRAME_POINTER_REGNUM	BP_REG
+#define HARD_FRAME_POINTER_REGNUM BP_REG
+#define FRAME_POINTER_REGNUM	FP_REG
 #define ARG_POINTER_REGNUM	AP_REG
 #define STATIC_CHAIN_REGNUM	CX_REG
 
@@ -329,32 +331,33 @@ enum reg_class
 /* 1 = register is fixed and cannot be used by the allocator.  */
 #define FIXED_REGISTERS						\
 {								\
-  /* AX DX CX BX SI DI BP SP ES CC AP */			\
-     0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1			\
+  /* AX DX CX BX SI DI BP SP ES CC AP FP */		\
+     0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1		\
 }
 
 /* 1 = register is clobbered by function calls.  */
 #define CALL_USED_REGISTERS					\
 {								\
-  /* AX DX CX BX SI DI BP SP ES CC AP */			\
-     1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1			\
+  /* AX DX CX BX SI DI BP SP ES CC AP FP */		\
+     1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1		\
 }
 
 /* Allocate caller-saved regs first, then callee-saved.  */
 #define REG_ALLOC_ORDER						\
   { AX_REG, DX_REG, CX_REG, BX_REG, SI_REG, DI_REG, BP_REG,	\
-    ES_REG, SP_REG, CC_REG, AP_REG }
+  ES_REG, SP_REG, CC_REG, AP_REG, FP_REG }
 
 /* On 8086, only BX, SI, DI, BP can be used as base registers
-   for memory addressing.  AP is a virtual register that will be
-   eliminated to BP, so it is also valid as a base.  */
+  for memory addressing.  AP and FP are virtual registers that will be
+  eliminated to BP, so they are also valid bases.  */
 #define REGNO_OK_FOR_BASE_P(REGNO)				\
   (((unsigned)(REGNO) < FIRST_PSEUDO_REGISTER			\
     && ((REGNO) == BX_REG					\
 	|| (REGNO) == SI_REG					\
 	|| (REGNO) == DI_REG					\
 	|| (REGNO) == BP_REG					\
-	|| (REGNO) == AP_REG))					\
+	|| (REGNO) == AP_REG					\
+  || (REGNO) == FP_REG))				\
    || (unsigned)(REGNO) >= FIRST_PSEUDO_REGISTER)
 
 /* On 8086, only SI and DI can be index registers (used with
@@ -373,8 +376,9 @@ enum reg_class
 
 #define ELIMINABLE_REGS						\
 {{ ARG_POINTER_REGNUM, STACK_POINTER_REGNUM },			\
- { ARG_POINTER_REGNUM, FRAME_POINTER_REGNUM },			\
- { FRAME_POINTER_REGNUM, STACK_POINTER_REGNUM }}
+ { ARG_POINTER_REGNUM, HARD_FRAME_POINTER_REGNUM },		\
+ { FRAME_POINTER_REGNUM, STACK_POINTER_REGNUM },			\
+ { FRAME_POINTER_REGNUM, HARD_FRAME_POINTER_REGNUM }}
 
 #define INITIAL_ELIMINATION_OFFSET(FROM, TO, OFFSET)		\
   (OFFSET) = ia16_initial_elimination_offset ((FROM), (TO))

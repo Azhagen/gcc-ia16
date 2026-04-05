@@ -17,8 +17,8 @@
 # License along with GCC; see the file COPYING3.  If not see
 # <http://www.gnu.org/licenses/>.
 
-# Multilib support for different memory models.
-MULTILIB_OPTIONS    = mmodel=small mmodel=medium mmodel=compact mmodel=large
-MULTILIB_DIRNAMES   = small medium compact large
-
+# No multilib for now — build only the default (small) model.
+# Multilib support for other memory models can be added later.
+MULTILIB_OPTIONS    =
+MULTILIB_DIRNAMES   =
 MULTILIB_EXTRA_OPTS =

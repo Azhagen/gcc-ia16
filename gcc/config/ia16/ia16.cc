@@ -69,6 +69,10 @@ struct GTY(()) machine_function
 static struct machine_function *
 ia16_init_machine_status (void)
 {
+  /* Ordinary stack references on ia16 need BP-based addressing.  Keep the
+     logical frame pointer live for every function so GCC sets up and
+     preserves the hard frame pointer consistently.  */
+  frame_pointer_needed = 1;
   return ggc_cleared_alloc<machine_function> ();
 }
 
@@ -77,24 +81,29 @@ ia16_compute_frame_info (void)
 {
   struct machine_function *m = cfun->machine;
 
-  if (m->computed)
+  if (m->computed && reload_completed)
     return;
 
   m->callee_saved_reg_size = 0;
   m->local_vars_size = get_frame_size ();
-  m->uses_frame_pointer = frame_pointer_needed;
+  m->uses_frame_pointer = true;
 
   /* Count callee-saved hard registers that need saving.  */
   for (int i = 0; i < FIRST_PSEUDO_REGISTER; i++)
     {
       if (df_regs_ever_live_p (i)
 	  && !call_used_or_fixed_reg_p (i)
-	  && !fixed_regs[i])
+	  && !fixed_regs[i]
+	  && i != BP_REG)
 	m->callee_saved_reg_size += 2;
     }
 
   m->frame_size = m->callee_saved_reg_size + m->local_vars_size;
-  m->computed = 1;
+
+  /* Elimination-offset queries can happen before reload has finished
+     creating spill slots.  Recompute until the frame layout is final so
+     prologue expansion sees the complete local size.  */
+  m->computed = reload_completed;
 }
 
 /* --------------------------------------------------------------------------
@@ -136,7 +145,8 @@ ia16_regno_reg_class (int regno)
     case SP_REG: return GENERAL_REGS;
     case ES_REG: return SEG_REGS;
     case CC_REG: return NO_REGS;
-    case AP_REG: return GENERAL_REGS;
+    case AP_REG: return BASE_REGS;
+    case FP_REG: return BASE_REGS;
     default:     return NO_REGS;
     }
 }
@@ -154,13 +164,14 @@ ia16_hard_regno_nregs (unsigned int regno, machine_mode mode)
   /* Treat singleton and otherwise invalid hard-reg/mode combinations as
      occupying exactly one hard register.  LRA can query this hook while
      building hard-reg spans without first checking HARD_REGNO_MODE_OK, and
-     returning a multi-register span for CC/AP/ES makes it walk into
+     returning a multi-register span for CC/AP/FP/ES makes it walk into
      unrelated adjacent hard registers.  */
   if (!ia16_hard_regno_mode_ok (regno, mode)
       || regno == SP_REG
       || regno == ES_REG
       || regno == CC_REG
-      || regno == AP_REG)
+      || regno == AP_REG
+      || regno == FP_REG)
     return 1;
 
   /* General 16-bit registers use one hard reg per word.  */
@@ -191,8 +202,8 @@ ia16_hard_regno_mode_ok (unsigned int regno, machine_mode mode)
   if (regno == ES_REG)
     return mode == HImode;
 
-  /* SP and AP: only pointer-sized values.  */
-  if (regno == SP_REG || regno == AP_REG)
+  /* SP, AP, and FP: only pointer-sized values.  */
+  if (regno == SP_REG || regno == AP_REG || regno == FP_REG)
     return mode == HImode || mode == Pmode;
 
   /* Only AX/BX/CX/DX have byte-addressable subregs.  */
@@ -315,10 +326,9 @@ ia16_can_eliminate (int from ATTRIBUTE_UNUSED, int to)
      local vars                BP-(2+saved_regs) .. BP-(2+saved_regs+locals)
                                <-- SP
 
-   With FRAME_GROWS_DOWNWARD, GCC's virtual frame pointer (FP)
-   addresses locals as FP+0, FP+2, ...  We eliminate FP to BP
-   by subtracting the callee-saved area + locals size so that
-   FP+0 maps to the lowest local variable slot.  */
+   GCC's logical frame pointer lives below the callee-saved area.  It is
+   eliminated either to the hard frame pointer (BP) or to SP using the
+   offsets computed below.  */
 
 int
 ia16_initial_elimination_offset (int from, int to)
@@ -327,28 +337,32 @@ ia16_initial_elimination_offset (int from, int to)
 
   struct machine_function *m = cfun->machine;
   int ret_addr_size = TARGET_FAR_CODE ? 4 : 2;
+  int saved_bp_size = m->uses_frame_pointer ? UNITS_PER_WORD : 0;
 
-  if (from == ARG_POINTER_REGNUM && to == FRAME_POINTER_REGNUM)
+  if (from == ARG_POINTER_REGNUM && to == HARD_FRAME_POINTER_REGNUM)
     {
       /* AP is above the return address and saved BP.
 	 AP+0 = BP + saved_bp(2) + ret_addr.  */
-      return ret_addr_size + 2;
+      return ret_addr_size + saved_bp_size;
     }
 
   if (from == ARG_POINTER_REGNUM && to == STACK_POINTER_REGNUM)
     {
       /* AP to SP: skip ret_addr + saved_bp + saved_regs + locals.  */
-      return ret_addr_size + 2 + m->callee_saved_reg_size
+	return ret_addr_size + saved_bp_size + m->callee_saved_reg_size
 	     + m->local_vars_size;
+    }
+
+  if (from == FRAME_POINTER_REGNUM && to == HARD_FRAME_POINTER_REGNUM)
+    {
+      /* The logical frame pointer lives below the saved-register area.  */
+      return -m->callee_saved_reg_size;
     }
 
   if (from == FRAME_POINTER_REGNUM && to == STACK_POINTER_REGNUM)
     {
-      /* Virtual FP to SP.  With FRAME_GROWS_DOWNWARD, GCC places
-	 locals at FP+0, FP+2, etc.  SP is at the bottom, so
-	 FP+0 should map to the lowest local slot.
-	 FP + offset = SP, so offset = 0 (locals sit just above SP).  */
-      return 0;
+      /* FP is one local-frame-sized chunk above the current SP.  */
+      return m->local_vars_size;
     }
 
   gcc_unreachable ();
@@ -859,6 +873,15 @@ ia16_rtx_costs (rtx x, machine_mode mode, int outer_code ATTRIBUTE_UNUSED,
       if (CONST_INT_P (XEXP (x, 1)))
 	{
 	  int count = INTVAL (XEXP (x, 1));
+
+    if (TARGET_8086 && mode == HImode && count == 8)
+      {
+        /* Count-8 word shifts can be lowered to byte shuffles on
+     AX/BX/CX/DX, and signed right shift can use CBW in AX.  */
+        *total = speed ? 2 : 2;
+        return false;
+      }
+
 	  /* On 8086, only shift by 1 or by CL.  For constant shifts,
 	     we need to emit N individual shifts or load CL.  */
 	  if (TARGET_8086)
@@ -985,7 +1008,7 @@ ia16_asm_file_start (void)
       fprintf (asm_out_file, "\t.arch i8086\n");
       break;
     case IA16_CPU_80186:
-      fprintf (asm_out_file, "\t.arch i80186\n");
+      fprintf (asm_out_file, "\t.arch i186\n");
       break;
     case IA16_CPU_80286:
       fprintf (asm_out_file, "\t.arch i286\n");
@@ -1132,6 +1155,82 @@ ia16_print_operand_address (FILE *file, machine_mode mode ATTRIBUTE_UNUSED,
 #undef  TARGET_PRINT_OPERAND_ADDRESS
 #define TARGET_PRINT_OPERAND_ADDRESS ia16_print_operand_address
 
+/* Canonicalize add/sub immediates so negative constants use the opposite
+   opcode with a positive magnitude.  This keeps stack adjustments and other
+   constant arithmetic readable in emitted assembly and disassembly.  */
+const char *
+ia16_output_addsub_insn (machine_mode mode, bool subtract_p, rtx *operands)
+{
+  const char *add_mnemonic;
+  const char *sub_mnemonic;
+  const char *inc_mnemonic;
+  const char *dec_mnemonic;
+  HOST_WIDE_INT val;
+
+  switch (mode)
+    {
+    case QImode:
+      add_mnemonic = "addb\t%2, %0";
+      sub_mnemonic = "subb\t%2, %0";
+      inc_mnemonic = "incb\t%0";
+      dec_mnemonic = "decb\t%0";
+      break;
+
+    case HImode:
+      add_mnemonic = "addw\t%2, %0";
+      sub_mnemonic = "subw\t%2, %0";
+      inc_mnemonic = "incw\t%0";
+      dec_mnemonic = "decw\t%0";
+      break;
+
+    default:
+      gcc_unreachable ();
+    }
+
+  if (!CONST_INT_P (operands[2]))
+    return subtract_p ? sub_mnemonic : add_mnemonic;
+
+  val = INTVAL (operands[2]);
+
+  if (mode == QImode)
+    {
+      val &= 0xff;
+      if (val & 0x80)
+        val -= 0x100;
+    }
+  else
+    {
+      val &= 0xffff;
+      if (val & 0x8000)
+        val -= 0x10000;
+    }
+
+  if (!subtract_p)
+    {
+      if (val == 1)
+        return inc_mnemonic;
+      if (val == -1)
+        return dec_mnemonic;
+      if (val < 0)
+        {
+          operands[2] = GEN_INT (-val);
+          return sub_mnemonic;
+        }
+      return add_mnemonic;
+    }
+
+  if (val == 1)
+    return dec_mnemonic;
+  if (val == -1)
+    return inc_mnemonic;
+  if (val < 0)
+    {
+      operands[2] = GEN_INT (-val);
+      return add_mnemonic;
+    }
+  return sub_mnemonic;
+}
+
 /* Helper for move instruction output.  */
 const char *
 ia16_output_move_insn (rtx *operands, machine_mode mode)
@@ -1140,6 +1239,225 @@ ia16_output_move_insn (rtx *operands, machine_mode mode)
     return "movb\t%1, %0";
   else
     return "movw\t%1, %0";
+}
+
+/* Emit a shift instruction.  On 8086, only a count of 1 or CL is encodable,
+   but later passes can still fold some larger constant counts back into the
+   shift patterns after the expander has normalized them.  Fall back to a
+   sequence of single-bit shifts in that case.  */
+const char *
+ia16_output_shift_insn (const char *mnemonic, rtx *operands)
+{
+  char single[16];
+  char generic[16];
+  rtx dest = operands[0];
+
+  snprintf (single, sizeof (single), "%s\t$1, %%0", mnemonic);
+  snprintf (generic, sizeof (generic), "%s\t%%2, %%0", mnemonic);
+
+  if (SUBREG_P (dest)
+      && REG_P (SUBREG_REG (dest))
+      && subreg_lowpart_p (dest))
+    dest = SUBREG_REG (dest);
+
+  if (operands[2] != NULL_RTX && CONST_INT_P (operands[2]))
+    {
+      HOST_WIDE_INT count = INTVAL (operands[2]);
+
+      gcc_assert (count >= 0);
+
+      if (count == 0)
+	return "";
+
+      if (count == 1)
+	{
+	  output_asm_insn (single, operands);
+	  return "";
+	}
+
+      if (count == 8 && REG_P (dest))
+	{
+	  unsigned int regno = REGNO (dest);
+
+	  if (regno == AX_REG || regno == BX_REG
+	      || regno == CX_REG || regno == DX_REG)
+	    {
+	      if (strcmp (mnemonic, "shlw") == 0)
+		{
+		  output_asm_insn ("movb\t%L0, %H0", operands);
+		  output_asm_insn ("movb\t$0, %L0", operands);
+		  return "";
+		}
+
+	      if (strcmp (mnemonic, "shrw") == 0)
+		{
+		  output_asm_insn ("movb\t%H0, %L0", operands);
+		  output_asm_insn ("movb\t$0, %H0", operands);
+		  return "";
+		}
+
+	      if (regno == AX_REG && strcmp (mnemonic, "sarw") == 0)
+		{
+		  output_asm_insn ("movb\t%H0, %L0", operands);
+		  output_asm_insn ("cbw", operands);
+		  return "";
+		}
+	    }
+	}
+
+      if (TARGET_8086)
+	{
+	  for (HOST_WIDE_INT i = 0; i < count; ++i)
+	    output_asm_insn (single, operands);
+	  return "";
+	}
+    }
+
+  output_asm_insn (generic, operands);
+  return "";
+}
+
+static void
+ia16_emit_hi_shift_in_place (enum rtx_code code, rtx dest, rtx count)
+{
+  switch (code)
+    {
+    case ASHIFT:
+      emit_insn (gen_ashlhi3 (dest, dest, count));
+      return;
+
+    case ASHIFTRT:
+      emit_insn (gen_ashrhi3 (dest, dest, count));
+      return;
+
+    case LSHIFTRT:
+      emit_insn (gen_lshrhi3 (dest, dest, count));
+      return;
+
+    default:
+      gcc_unreachable ();
+    }
+}
+
+static void
+ia16_emit_hi_shift_copy (enum rtx_code code, rtx dest, rtx src, rtx count)
+{
+  if (!rtx_equal_p (dest, src))
+    emit_move_insn (dest, src);
+  if (!(CONST_INT_P (count) && INTVAL (count) == 0))
+    ia16_emit_hi_shift_in_place (code, dest, count);
+}
+
+bool
+ia16_expand_const_shift_si (enum rtx_code code, rtx *operands)
+{
+  if (!CONST_INT_P (operands[2]))
+    return false;
+
+  HOST_WIDE_INT count = INTVAL (operands[2]);
+  rtx dest = operands[0];
+  rtx src = operands[1];
+
+  gcc_assert (register_operand (dest, SImode));
+
+  if (!register_operand (src, SImode))
+    src = force_reg (SImode, src);
+
+  if (count <= 0)
+    {
+      if (!rtx_equal_p (dest, src))
+        emit_move_insn (dest, src);
+      return true;
+    }
+
+  rtx out_lo = ia16_split_si_half (dest, 0);
+  rtx out_hi = ia16_split_si_half (dest, 1);
+  rtx in_lo = ia16_split_si_half (src, 0);
+  rtx in_hi = ia16_split_si_half (src, 1);
+
+  if (code == ASHIFT && count == 1)
+    {
+      if (!rtx_equal_p (dest, src))
+        emit_move_insn (dest, src);
+      emit_insn (gen_addsi3 (dest, dest, dest));
+      return true;
+    }
+
+  if (count >= 32)
+    {
+      if (code == ASHIFTRT)
+        {
+          ia16_emit_hi_shift_copy (ASHIFTRT, out_hi, in_hi, GEN_INT (15));
+          emit_move_insn (out_lo, out_hi);
+        }
+      else
+        {
+          emit_move_insn (out_lo, CONST0_RTX (HImode));
+          emit_move_insn (out_hi, CONST0_RTX (HImode));
+        }
+      return true;
+    }
+
+  if (code == ASHIFT)
+    {
+      if (count >= 16)
+        {
+          ia16_emit_hi_shift_copy (ASHIFT, out_hi, in_lo,
+                                   GEN_INT (count - 16));
+          emit_move_insn (out_lo, CONST0_RTX (HImode));
+          return true;
+        }
+
+      rtx carry = gen_reg_rtx (HImode);
+
+      emit_move_insn (carry, in_lo);
+      ia16_emit_hi_shift_copy (ASHIFT, out_hi, in_hi, GEN_INT (count));
+      emit_insn (gen_lshrhi3 (carry, carry, GEN_INT (16 - count)));
+      emit_insn (gen_iorhi3 (out_hi, out_hi, carry));
+      ia16_emit_hi_shift_copy (ASHIFT, out_lo, in_lo, GEN_INT (count));
+      return true;
+    }
+
+  if (code == LSHIFTRT)
+    {
+      if (count >= 16)
+        {
+          ia16_emit_hi_shift_copy (LSHIFTRT, out_lo, in_hi,
+                                   GEN_INT (count - 16));
+          emit_move_insn (out_hi, CONST0_RTX (HImode));
+          return true;
+        }
+
+      rtx carry = gen_reg_rtx (HImode);
+
+      emit_move_insn (carry, in_hi);
+      emit_insn (gen_ashlhi3 (carry, carry, GEN_INT (16 - count)));
+      ia16_emit_hi_shift_copy (LSHIFTRT, out_lo, in_lo, GEN_INT (count));
+      emit_insn (gen_iorhi3 (out_lo, out_lo, carry));
+      ia16_emit_hi_shift_copy (LSHIFTRT, out_hi, in_hi, GEN_INT (count));
+      return true;
+    }
+
+  if (count >= 16)
+    {
+      rtx sign = gen_reg_rtx (HImode);
+
+      emit_move_insn (sign, in_hi);
+      ia16_emit_hi_shift_in_place (ASHIFTRT, sign, GEN_INT (15));
+      ia16_emit_hi_shift_copy (ASHIFTRT, out_lo, in_hi,
+                               GEN_INT (count - 16));
+      emit_move_insn (out_hi, sign);
+      return true;
+    }
+
+  rtx carry = gen_reg_rtx (HImode);
+
+  emit_move_insn (carry, in_hi);
+  emit_insn (gen_ashlhi3 (carry, carry, GEN_INT (16 - count)));
+  ia16_emit_hi_shift_copy (LSHIFTRT, out_lo, in_lo, GEN_INT (count));
+  emit_insn (gen_iorhi3 (out_lo, out_lo, carry));
+  ia16_emit_hi_shift_copy (ASHIFTRT, out_hi, in_hi, GEN_INT (count));
+  return true;
 }
 
 /* Return complex part PART of X in MODE as an inner-mode operand.  */
