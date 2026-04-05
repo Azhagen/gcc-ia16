@@ -545,15 +545,35 @@ ia16_legitimate_constant_p (machine_mode mode ATTRIBUTE_UNUSED, rtx x)
 static rtx ia16_legitimize_address (rtx, rtx, machine_mode);
 
 /* --------------------------------------------------------------------------
-   Far Pointer / Named Address Space Support
+   Named Address Space Pointer Support
 
    ADDR_SPACE_FAR (1) represents segmented far pointers (segment:offset).
-   A far pointer is SImode (32 bits): low 16 bits = offset, high 16 = segment.
-   Far memory access uses LES to load the pointer into ES:reg, then
-   accesses memory with an %es: segment override prefix.
+   A far pointer is SImode (32 bits): low 16 bits = offset, high 16 =
+   segment.
+
+   ADDR_SPACE_HUGE (2) also uses SImode, but represents a zero-extended
+   linear 20-bit address.  That keeps generic SImode arithmetic correct for
+   huge pointers; dereferences canonicalize the linear value back to ES:off.
+
+   Far and huge memory accesses both lower through ES-based loads/stores.
    -------------------------------------------------------------------------- */
 
-/* Accept both near and far pointer machine modes.  Generic code can ask
+static bool
+ia16_segmented_addr_space_p (addr_space_t addrspace)
+{
+  return addrspace == ADDR_SPACE_FAR || addrspace == ADDR_SPACE_HUGE;
+}
+
+static bool
+ia16_static_pointer_constant_context_p (void)
+{
+  return (!currently_expanding_to_rtl
+	  || crtl == NULL
+	  || !crtl->emit.regno_pointer_align_length);
+}
+
+/* Accept both near and segmented 32-bit pointer machine modes.  Generic code
+  can ask
   about either without carrying an explicit address-space tag.  */
 static bool
 ia16_valid_pointer_mode (scalar_int_mode mode)
@@ -568,7 +588,7 @@ ia16_valid_pointer_mode (scalar_int_mode mode)
 static scalar_int_mode
 ia16_addr_space_pointer_mode (addr_space_t addrspace)
 {
-  if (addrspace == ADDR_SPACE_FAR)
+  if (ia16_segmented_addr_space_p (addrspace))
     return SImode;
   return HImode;
 }
@@ -590,14 +610,17 @@ ia16_addr_space_valid_pointer_mode (scalar_int_mode mode,
 #undef  TARGET_ADDR_SPACE_VALID_POINTER_MODE
 #define TARGET_ADDR_SPACE_VALID_POINTER_MODE ia16_addr_space_valid_pointer_mode
 
-/* Near address space is a subset of far.  */
+/* Near pointers can widen to both far and huge, and far can widen to huge.  */
 static bool
 ia16_addr_space_subset_p (addr_space_t subset, addr_space_t superset)
 {
   if (subset == superset)
     return true;
-  /* Near (generic) is a subset of far.  */
-  return (subset == ADDR_SPACE_GENERIC && superset == ADDR_SPACE_FAR);
+
+  if (subset == ADDR_SPACE_GENERIC)
+    return superset == ADDR_SPACE_FAR || superset == ADDR_SPACE_HUGE;
+
+  return subset == ADDR_SPACE_FAR && superset == ADDR_SPACE_HUGE;
 }
 
 #undef  TARGET_ADDR_SPACE_SUBSET_P
@@ -610,11 +633,29 @@ enum ia16_default_segment
   IA16_SEG_CS
 };
 
-/* Return true if OP is a symbolic constant that can use the target-specific
-   far-pointer relocations.  */
-static bool
-ia16_symbolic_far_constant_p (rtx op)
+/* Huge-pointer subtraction should yield a full-width signed linear offset,
+   matching the 32-bit huge pointer representation.  */
+static tree
+ia16_addr_space_ptrdiff_type (addr_space_t addrspace)
 {
+  if (addrspace == ADDR_SPACE_HUGE)
+    return long_integer_type_node;
+
+  return ptrdiff_type_node;
+}
+
+#undef  TARGET_ADDR_SPACE_PTRDIFF_TYPE
+#define TARGET_ADDR_SPACE_PTRDIFF_TYPE ia16_addr_space_ptrdiff_type
+
+/* Return true if OP is a symbolic constant that can use the target-specific
+   segmented-pointer handling.  */
+static bool
+ia16_symbolic_ptr_constant_p (rtx op)
+{
+  if (GET_CODE (op) == UNSPEC
+    && (XINT (op, 1) == UNSPEC_FAR_PTR || XINT (op, 1) == UNSPEC_HUGE_PTR))
+   op = XVECEXP (op, 0, 0);
+
   rtx base = op;
   rtx offset = const0_rtx;
 
@@ -622,6 +663,18 @@ ia16_symbolic_far_constant_p (rtx op)
     split_const (op, &base, &offset);
 
   return SYMBOL_REF_P (base) || LABEL_REF_P (base);
+}
+
+/* Strip target-specific pointer wrappers back to the underlying symbolic
+   constant.  */
+static rtx
+ia16_underlying_symbolic_ptr_constant (rtx op)
+{
+  if (GET_CODE (op) == UNSPEC
+      && (XINT (op, 1) == UNSPEC_FAR_PTR || XINT (op, 1) == UNSPEC_HUGE_PTR))
+    return XVECEXP (op, 0, 0);
+
+  return op;
 }
 
 /* Emit one half of a segmented far symbolic constant using segelf syntax.  */
@@ -643,6 +696,15 @@ ia16_output_far_constant_word (FILE *file, rtx x, bool segment_p)
         fputc ('+', file);
       output_addr_const (file, offset);
     }
+  fputc ('\n', file);
+}
+
+/* Emit a huge-pointer constant as a 32-bit linear ELF symbol value.  */
+static void
+ia16_output_huge_constant_dword (FILE *file, rtx x)
+{
+  fputs ("\t.long\t", file);
+  output_addr_const (file, x);
   fputc ('\n', file);
 }
 
@@ -688,63 +750,191 @@ ia16_near_address_segment (rtx op, tree from_type)
   return IA16_SEG_DS;
 }
 
-/* Convert between near and far address spaces.  */
+/* Materialize the current value of the requested default segment register.  */
+static rtx
+ia16_get_current_segment (enum ia16_default_segment segment)
+{
+  rtx result = gen_reg_rtx (HImode);
+
+  switch (segment)
+    {
+    case IA16_SEG_DS:
+      emit_insn (gen_store_ds (result));
+      break;
+
+    case IA16_SEG_SS:
+      emit_insn (gen_store_ss (result));
+      break;
+
+    case IA16_SEG_CS:
+      emit_insn (gen_store_cs (result));
+      break;
+    }
+
+  return result;
+}
+
+/* Assemble OFFSET:SEGMENT into the raw far-pointer representation.  */
+static rtx
+ia16_emit_far_pointer (rtx offset, rtx segment)
+{
+  rtx result = gen_reg_rtx (SImode);
+  rtx low = ia16_split_si_half (result, 0);
+  rtx high = ia16_split_si_half (result, 1);
+
+  emit_move_insn (low, offset);
+  emit_move_insn (high, segment);
+  return result;
+}
+
+/* Convert OFFSET:SEGMENT into the huge-pointer linear representation.  */
+static rtx
+ia16_emit_huge_pointer (rtx offset, rtx segment)
+{
+  rtx result = gen_reg_rtx (SImode);
+  rtx tmp = gen_reg_rtx (SImode);
+
+  emit_insn (gen_zero_extendhisi2 (result, segment));
+  emit_insn (gen_ashlsi3 (result, result, GEN_INT (4)));
+  emit_insn (gen_zero_extendhisi2 (tmp, offset));
+  emit_insn (gen_addsi3 (result, result, tmp));
+  return result;
+}
+
+/* Decompose the huge-pointer linear representation into a canonical ES:off
+   pair suitable for memory accesses.  */
+static void
+ia16_emit_huge_address_parts_1 (rtx offset, rtx segment, rtx addr)
+{
+  rtx shifted = gen_reg_rtx (SImode);
+
+  gcc_assert (REG_P (addr) && GET_MODE (addr) == SImode);
+
+  emit_move_insn (offset, gen_lowpart (HImode, addr));
+  emit_insn (gen_andhi3 (offset, offset, GEN_INT (15)));
+
+  emit_move_insn (shifted, addr);
+  emit_insn (gen_lshrsi3 (shifted, shifted, GEN_INT (4)));
+  emit_move_insn (segment, gen_lowpart (HImode, shifted));
+}
+
+/* Shared helper used by the machine-description move expanders.  */
+void
+ia16_emit_huge_address_parts (rtx offset, rtx segment, rtx addr)
+{
+  ia16_emit_huge_address_parts_1 (offset, segment, addr);
+}
+
+/* Build a symbolic far pointer, using a constant wrapper during static data
+   emission and explicit code generation elsewhere.  */
+static rtx
+ia16_emit_symbolic_far_pointer (rtx op)
+{
+  op = ia16_underlying_symbolic_ptr_constant (op);
+
+  if (ia16_static_pointer_constant_context_p ())
+    return gen_rtx_UNSPEC (SImode, gen_rtvec (1, op), UNSPEC_FAR_PTR);
+
+  rtx result = gen_reg_rtx (SImode);
+  rtx low = ia16_split_si_half (result, 0);
+  rtx high = ia16_split_si_half (result, 1);
+
+  emit_insn (gen_load_off16 (low, op));
+  emit_insn (gen_load_seg16 (high, op));
+  return result;
+}
+
+/* Build a symbolic huge pointer, using a constant wrapper during static data
+   emission and explicit code generation elsewhere.  */
+static rtx
+ia16_emit_symbolic_huge_pointer (rtx op)
+{
+  op = ia16_underlying_symbolic_ptr_constant (op);
+
+  if (ia16_static_pointer_constant_context_p ())
+    return gen_rtx_UNSPEC (SImode, gen_rtvec (1, op), UNSPEC_HUGE_PTR);
+
+  rtx offset = gen_reg_rtx (HImode);
+  rtx segment = gen_reg_rtx (HImode);
+
+  emit_insn (gen_load_off16 (offset, op));
+  emit_insn (gen_load_seg16 (segment, op));
+  return ia16_emit_huge_pointer (offset, segment);
+}
+
+/* Convert between near, far, and huge address spaces.  */
 static rtx
 ia16_addr_space_convert (rtx op, tree from_type, tree to_type)
 {
   addr_space_t from_as = TYPE_ADDR_SPACE (TREE_TYPE (from_type));
   addr_space_t to_as = TYPE_ADDR_SPACE (TREE_TYPE (to_type));
 
-  if (to_as == ADDR_SPACE_FAR && from_as != ADDR_SPACE_FAR)
+  if (to_as == from_as)
+    return op;
+
+  if (to_as == ADDR_SPACE_FAR)
     {
-      /* Near → far: keep the near offset in the low word and materialize
-   the appropriate segment in the high word.  Symbolic constants use
-   linker relocations; register-derived near addresses use the current
-   default segment register.  */
-      if (ia16_symbolic_far_constant_p (op))
+
+      if (ia16_symbolic_ptr_constant_p (op))
+	return ia16_emit_symbolic_far_pointer (op);
+
+      if (from_as == ADDR_SPACE_HUGE)
 	{
-    if (!currently_expanding_to_rtl
-        || crtl == NULL
-        || !crtl->emit.regno_pointer_align_length)
-      return gen_rtx_UNSPEC (SImode, gen_rtvec (1, op), UNSPEC_FAR_PTR);
+	  rtx addr = force_reg (SImode, op);
+	  rtx offset = gen_reg_rtx (HImode);
+	  rtx segment = gen_reg_rtx (HImode);
 
-	  rtx result = gen_reg_rtx (SImode);
-	  rtx low = ia16_split_si_half (result, 0);
-	  rtx high = ia16_split_si_half (result, 1);
-
-	  emit_insn (gen_load_off16 (low, op));
-	  emit_insn (gen_load_seg16 (high, op));
-	  return result;
+	  ia16_emit_huge_address_parts_1 (offset, segment, addr);
+	  return ia16_emit_far_pointer (offset, segment);
 	}
 
-      rtx result = gen_reg_rtx (SImode);
-      rtx low = ia16_split_si_half (result, 0);
-      rtx high = ia16_split_si_half (result, 1);
-
-      emit_move_insn (low, op);
-
-      switch (ia16_near_address_segment (op, from_type))
-  {
-  case IA16_SEG_DS:
-    emit_insn (gen_store_ds (high));
-    break;
-
-  case IA16_SEG_SS:
-    emit_insn (gen_store_ss (high));
-    break;
-
-  case IA16_SEG_CS:
-    emit_insn (gen_store_cs (high));
-    break;
-  }
-
-      return result;
+      rtx offset = force_reg (HImode, op);
+      rtx segment = ia16_get_current_segment (
+	ia16_near_address_segment (op, from_type));
+      return ia16_emit_far_pointer (offset, segment);
     }
-  else if (to_as != ADDR_SPACE_FAR && from_as == ADDR_SPACE_FAR)
+
+  if (to_as == ADDR_SPACE_HUGE)
+    {
+      if (ia16_symbolic_ptr_constant_p (op))
+	return ia16_emit_symbolic_huge_pointer (op);
+
+      if (from_as == ADDR_SPACE_FAR)
+	{
+	  rtx addr = force_reg (SImode, op);
+	  rtx offset = gen_reg_rtx (HImode);
+	  rtx segment = gen_reg_rtx (HImode);
+
+	  emit_move_insn (offset, gen_lowpart (HImode, addr));
+	  emit_move_insn (segment, gen_highpart (HImode, addr));
+	  return ia16_emit_huge_pointer (offset, segment);
+	}
+
+	{
+	  rtx offset = force_reg (HImode, op);
+	  rtx segment = ia16_get_current_segment (
+	    ia16_near_address_segment (op, from_type));
+	  return ia16_emit_huge_pointer (offset, segment);
+	}
+    }
+
+  if (to_as == ADDR_SPACE_GENERIC && from_as == ADDR_SPACE_FAR)
     {
       /* Far → near: truncate to 16-bit offset (drop segment).  */
       rtx result = gen_reg_rtx (HImode);
       emit_move_insn (result, gen_lowpart (HImode, op));
+      return result;
+    }
+
+  if (to_as == ADDR_SPACE_GENERIC && from_as == ADDR_SPACE_HUGE)
+    {
+      /* Huge → near: canonicalize to ES:off first, then drop the segment.
+ 	 This is intentionally lossy, matching the far → near behaviour.  */
+      rtx addr = force_reg (SImode, op);
+      rtx result = gen_reg_rtx (HImode);
+      rtx segment = gen_reg_rtx (HImode);
+
+      ia16_emit_huge_address_parts_1 (result, segment, addr);
       return result;
     }
 
@@ -754,17 +944,16 @@ ia16_addr_space_convert (rtx op, tree from_type, tree to_type)
 #undef  TARGET_ADDR_SPACE_CONVERT
 #define TARGET_ADDR_SPACE_CONVERT ia16_addr_space_convert
 
-/* Validate a far address.  A far memory access loads the segment:offset
-   pair into ES:reg, then uses %es:(%reg) addressing.  The address
-   inside the MEM is still the offset portion — the segment override
-   is handled in the output.  For now, accept the same address forms
-   as near addresses.  */
+/* Validate a far/huge address.  Far addresses are already stored as
+   segment:offset pairs; huge addresses store linear values and are
+   canonicalized to ES:off before dereference.  Both travel through a single
+   SImode pseudo in the MEM address.  */
 static bool
 ia16_addr_space_legitimate_address_p (machine_mode mode, rtx addr,
 				      bool strict, addr_space_t as,
 				      code_helper ch)
 {
-  if (as == ADDR_SPACE_FAR)
+  if (ia16_segmented_addr_space_p (as))
     return REG_P (addr) && GET_MODE (addr) == SImode;
   return ia16_legitimate_address_p (mode, addr, strict, ch);
 }
@@ -871,14 +1060,14 @@ ia16_legitimize_address (rtx x, rtx oldx ATTRIBUTE_UNUSED,
 #undef  TARGET_LEGITIMIZE_ADDRESS
 #define TARGET_LEGITIMIZE_ADDRESS ia16_legitimize_address
 
-/* Keep far addresses in one SImode pseudo so segment and offset stay
-   coupled until the far move expanders split them into ES and offset.  */
+/* Keep far and huge addresses in one SImode pseudo so their parts stay
+   coupled until the move expanders canonicalize them for the actual access.  */
 static rtx
 ia16_addr_space_legitimize_address (rtx x, rtx oldx,
 				    machine_mode mode,
 				    addr_space_t as)
 {
-  if (as == ADDR_SPACE_FAR)
+  if (ia16_segmented_addr_space_p (as))
     {
       gcc_assert (GET_MODE (x) == SImode);
 
@@ -1372,7 +1561,7 @@ ia16_print_operand (FILE *file, rtx x, int code)
     }
   else
     {
-      if ((code == 'O' || code == 'S') && ia16_symbolic_far_constant_p (x))
+      if ((code == 'O' || code == 'S') && ia16_symbolic_ptr_constant_p (x))
   {
     rtx base = x;
     rtx offset = const0_rtx;
@@ -1438,7 +1627,8 @@ ia16_print_operand_address (FILE *file, machine_mode mode ATTRIBUTE_UNUSED,
 #undef  TARGET_PRINT_OPERAND_ADDRESS
 #define TARGET_PRINT_OPERAND_ADDRESS ia16_print_operand_address
 
-/* Emit static segmented far-pointer constants as offset and segment words.  */
+/* Emit static segmented far-pointer constants as offset/segment words and
+   huge-pointer constants as linear .long values.  */
 static bool
 ia16_assemble_integer (rtx x, unsigned int size, int aligned_p)
 {
@@ -1446,10 +1636,20 @@ ia16_assemble_integer (rtx x, unsigned int size, int aligned_p)
       && GET_CODE (x) == UNSPEC
       && XINT (x, 1) == UNSPEC_FAR_PTR)
     {
-      rtx op = XVECEXP (x, 0, 0);
+      rtx op = ia16_underlying_symbolic_ptr_constant (x);
 
       ia16_output_far_constant_word (asm_out_file, op, false);
       ia16_output_far_constant_word (asm_out_file, op, true);
+      return true;
+    }
+
+  if (size == 4
+      && GET_CODE (x) == UNSPEC
+      && XINT (x, 1) == UNSPEC_HUGE_PTR)
+    {
+      rtx op = ia16_underlying_symbolic_ptr_constant (x);
+
+      ia16_output_huge_constant_dword (asm_out_file, op);
       return true;
     }
 

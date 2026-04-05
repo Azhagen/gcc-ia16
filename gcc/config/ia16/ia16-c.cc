@@ -25,10 +25,11 @@
 #include "tm.h"
 #include "c-family/c-common.h"
 
-/* Register the __far named address space keyword.  */
+/* Register the __far and __huge named address space keywords.  */
 
 void
 ia16_register_pragmas (void)
 {
   c_register_addr_space ("__far", ADDR_SPACE_FAR);
+  c_register_addr_space ("__huge", ADDR_SPACE_HUGE);
 }

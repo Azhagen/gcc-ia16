@@ -25,6 +25,20 @@
 (define_predicate "ia16_nonimmediate_operand"
   (match_operand 0 "nonimmediate_operand"))
 
+;; Return true for near nonimmediate operands.
+(define_predicate "ia16_near_nonimmediate_operand"
+  (match_operand 0 "nonimmediate_operand")
+{
+  return !MEM_P (op) || ADDR_SPACE_GENERIC_P (MEM_ADDR_SPACE (op));
+})
+
+;; Return true for near general operands.
+(define_predicate "ia16_near_general_operand"
+  (match_operand 0 "general_operand")
+{
+  return !MEM_P (op) || ADDR_SPACE_GENERIC_P (MEM_ADDR_SPACE (op));
+})
+
 ;; Return true if OP is an immediate operand fitting in 8 bits.
 (define_predicate "const_byte_operand"
   (and (match_code "const_int")

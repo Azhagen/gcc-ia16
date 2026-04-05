@@ -67,14 +67,18 @@
       if (ia16_memmodel >= IA16_MODEL_COMPACT	\
 	  && ia16_memmodel != IA16_MODEL_MEDIUM)	\
 	builtin_define ("__FAR_DATA__");		\
-      /* In C, __far is a named address space keyword	\
-	 (registered via REGISTER_TARGET_PRAGMAS).	\
-	 In C++, named address spaces are not supported \
-	 so provide __far as a macro using the GCC	\
-	 address_space attribute.  */			\
+      /* In C, __far and __huge are named address space keywords	\
+   (registered via REGISTER_TARGET_PRAGMAS).		\
+   In C++, named address spaces are not supported \
+   so provide __far/__huge as macros using the GCC	\
+   address_space attribute.  */			\
       if (c_dialect_cxx ())				\
-	builtin_define ("__far=__attribute__"		\
-			"((address_space(1)))");	\
+    {						\
+      builtin_define ("__far=__attribute__"	\
+          "((address_space(1)))");	\
+      builtin_define ("__huge=__attribute__"	\
+          "((address_space(2)))");	\
+    }						\
     }							\
   while (0)
 
@@ -142,13 +146,18 @@
 
 #define MAX_REGS_PER_ADDRESS	2
 
-/* Pointer size is 16 bits for near pointers, 32 bits for far pointers.  */
+/* Pointer size is 16 bits for near pointers, 32 bits for far/huge
+  pointers in named address spaces.  */
 #define Pmode		HImode
 #define POINTER_SIZE	16
 #define POINTERS_EXTEND_UNSIGNED 1
 
-/* Far pointer mode: segment:offset = 32 bits.  */
+/* Segmented far pointer mode: segment:offset = 32 bits.
+  Huge pointers also use SImode but represent linear 20-bit addresses
+  zero-extended to 32 bits so arithmetic stays correct across segment
+  boundaries.  */
 #define ADDR_SPACE_FAR		1
+#define ADDR_SPACE_HUGE		2
 
 extern void ia16_register_pragmas (void);
 #define REGISTER_TARGET_PRAGMAS() ia16_register_pragmas ()
