@@ -10247,7 +10247,8 @@ expand_expr_real_2 (const_sepops ops, rtx target, machine_mode tmode,
 
               if (as != ADDR_SPACE_GENERIC)
                 {
-                  temp = targetm.addr_space.pointer_plus (op0, op1, mode, as);
+                  temp = targetm.addr_space.pointer_op (code, op0, op1,
+						      mode, as);
                   if (temp)
                     return REDUCE_BIT_FIELD (temp);
                 }
@@ -10279,6 +10280,21 @@ expand_expr_real_2 (const_sepops ops, rtx target, machine_mode tmode,
 			   NULL_RTX, &op0, &op1, modifier);
 	  return simplify_gen_binary (MINUS, mode, op0, op1);
 	}
+
+      if (code == POINTER_DIFF_EXPR)
+        {
+          addr_space_t as = TYPE_ADDR_SPACE (TREE_TYPE (TREE_TYPE (treeop0)));
+
+          expand_operands (treeop0, treeop1,
+                           subtarget, &op0, &op1, modifier);
+          if (as != ADDR_SPACE_GENERIC)
+            {
+              temp = targetm.addr_space.pointer_op (code, op0, op1, mode, as);
+              if (temp)
+                return REDUCE_BIT_FIELD (temp);
+            }
+          goto binop2;
+        }
 
       /* No sense saving up arithmetic to be done
 	 if it's all in the wrong mode to form part of an address.

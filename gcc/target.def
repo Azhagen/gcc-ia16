@@ -3532,16 +3532,20 @@ version of this hook returns @code{sizetype}.",
  tree, (addr_space_t as),
  default_addr_space_size_type)
 
-/* Expand pointer addition in a named address space.  */
+/* Expand pointer arithmetic in a named address space.  */
 DEFHOOK
-(pointer_plus,
- "Define this to expand a @code{POINTER_PLUS_EXPR} for a pointer in the\n\
-named address space @var{as}.  The operands @var{ptr} and @var{offset}\n\
-are the already-expanded RTL operands and @var{mode} is the pointer mode.\n\
-Return the resulting RTL, or @code{NULL_RTX} to use the default linear\n\
-pointer addition expansion.",
- rtx, (rtx ptr, rtx offset, machine_mode mode, addr_space_t as),
- default_addr_space_pointer_plus)
+(pointer_op,
+ "Define this to expand a @code{POINTER_PLUS_EXPR} or\n\
+@code{POINTER_DIFF_EXPR} for the named address space @var{as}.  The\n\
+@var{code} argument identifies which operation is being expanded.  The\n\
+operands @var{op0} and @var{op1} are the already-expanded RTL operands,\n\
+with @var{op1} being the byte offset for @code{POINTER_PLUS_EXPR} and the\n\
+right-hand pointer for @code{POINTER_DIFF_EXPR}.  @var{mode} is the result\n\
+mode.  Return the resulting RTL, or @code{NULL_RTX} to use the default\n\
+linear expansion.",
+ rtx, (enum tree_code code, rtx op0, rtx op1, machine_mode mode,
+   addr_space_t as),
+ default_addr_space_pointer_op)
 
 /* True if 0 is a valid address in the address space, or false if
    0 is a NULL in the address space.  */
