@@ -1789,6 +1789,15 @@ default_addr_space_size_type (addr_space_t as ATTRIBUTE_UNUSED)
   return sizetype;
 }
 
+rtx
+default_addr_space_pointer_plus (rtx ptr ATTRIBUTE_UNUSED,
+				 rtx offset ATTRIBUTE_UNUSED,
+				 machine_mode mode ATTRIBUTE_UNUSED,
+				 addr_space_t as ATTRIBUTE_UNUSED)
+{
+  return NULL_RTX;
+}
+
 /* The default hook for determining if 0 within a named address
    space is a valid address.  */
 

@@ -10237,16 +10237,27 @@ expand_expr_real_2 (const_sepops ops, rtx target, machine_mode tmode,
 	 And force_operand won't know whether to sign-extend or
 	 zero-extend.  */
       if (modifier != EXPAND_INITIALIZER
-	  && (modifier != EXPAND_SUM || mode != ptr_mode))
-	{
-	  expand_operands (treeop0, treeop1,
-			   subtarget, &op0, &op1, modifier);
-	  if (op0 == const0_rtx)
-	    return op1;
-	  if (op1 == const0_rtx)
-	    return op0;
-	  goto binop2;
-	}
+          && (modifier != EXPAND_SUM || mode != ptr_mode))
+        {
+          expand_operands (treeop0, treeop1,
+                           subtarget, &op0, &op1, modifier);
+          if (code == POINTER_PLUS_EXPR)
+            {
+              addr_space_t as = TYPE_ADDR_SPACE (TREE_TYPE (type));
+
+              if (as != ADDR_SPACE_GENERIC)
+                {
+                  temp = targetm.addr_space.pointer_plus (op0, op1, mode, as);
+                  if (temp)
+                    return REDUCE_BIT_FIELD (temp);
+                }
+            }
+          if (op0 == const0_rtx)
+            return op1;
+          if (op1 == const0_rtx)
+            return op0;
+          goto binop2;
+        }
 
       expand_operands (treeop0, treeop1,
 		       subtarget, &op0, &op1, modifier);
