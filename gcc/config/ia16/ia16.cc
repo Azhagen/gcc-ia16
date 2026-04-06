@@ -688,6 +688,28 @@ ia16_addr_space_size_type (addr_space_t as)
 #undef  TARGET_ADDR_SPACE_SIZE_TYPE
 #define TARGET_ADDR_SPACE_SIZE_TYPE ia16_addr_space_size_type
 
+/* Plain far pointers keep a raw segment:offset representation, so arithmetic
+   only updates the offset word and never propagates carry into the segment.
+   Huge pointers stay on the generic linear SImode path.  */
+static rtx
+ia16_addr_space_pointer_plus (rtx ptr, rtx offset,
+			      machine_mode mode, addr_space_t as)
+{
+  if (as != ADDR_SPACE_FAR || mode != SImode)
+    return NULL_RTX;
+
+  rtx result = gen_reg_rtx (SImode);
+  rtx truncated_offset = gen_lowpart (HImode, force_reg (SImode, offset));
+  rtx low = ia16_split_si_half (result, 0);
+
+  emit_move_insn (result, ptr);
+  emit_insn (gen_addhi3 (low, low, truncated_offset));
+  return result;
+}
+
+#undef  TARGET_ADDR_SPACE_POINTER_PLUS
+#define TARGET_ADDR_SPACE_POINTER_PLUS ia16_addr_space_pointer_plus
+
 /* Return true if OP is a symbolic constant that can use the target-specific
    segmented-pointer handling.  */
 static bool

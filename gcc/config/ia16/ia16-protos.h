@@ -35,8 +35,7 @@ extern unsigned int ia16_hard_regno_nregs (unsigned int, machine_mode);
 extern int ia16_register_move_cost (machine_mode, reg_class_t, reg_class_t);
 extern int ia16_memory_move_cost (machine_mode, reg_class_t, bool);
 extern bool ia16_can_eliminate (int, int);
-extern bool ia16_legitimize_reload_address (rtx *, machine_mode, int, int,
-					    int);
+extern bool ia16_legitimize_reload_address (rtx *, machine_mode, int, int, int);
 extern rtx ia16_complex_part (rtx, machine_mode, unsigned int);
 extern rtx ia16_subword (rtx, machine_mode, unsigned int);
 extern void ia16_emit_huge_address_parts (rtx, rtx, rtx);
