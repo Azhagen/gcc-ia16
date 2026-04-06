@@ -1,0 +1,48 @@
+# Makefile fragment for libgcc on ia16-elf (16-bit x86).
+# Copyright (C) 2026 Free Software Foundation, Inc.
+#
+# This file is part of GCC.
+#
+# GCC is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# GCC is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
+# the GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public
+# License along with GCC; see the file COPYING3.  If not see
+# <http://www.gnu.org/licenses/>.
+
+# Build libgcc with size optimization and section-per-function
+# so the linker can garbage-collect unused routines.
+HOST_LIBGCC2_CFLAGS += -Os -ffunction-sections -fdata-sections
+
+LIB2ADD += $(srcdir)/config/ia16/lib2shift.S
+
+# On 16-bit-word targets libgcc2.c builds the exported SI shift helpers from
+# the _ashldi3/_ashrdi3/_lshrdi3 objects.  Exclude those object names so the
+# handwritten IA-16 helper wins in libgcc.a.
+LIB2FUNCS_EXCLUDE += _ashldi3 _ashrdi3 _lshrdi3
+
+# We don't need exception handling or thread support.
+LIB2ADDEH =
+SHLIB_MAPFILES =
+
+# CRT startup files.
+EXTRA_PARTS += crt0-com.o
+
+# Install linker scripts alongside the libraries.
+EXTRA_PARTS += ia16.ld ia16-com.ld
+
+crt0-com.o: $(srcdir)/config/ia16/crt0-com.S
+	$(crt_compile) -c $<
+
+ia16.ld: $(srcdir)/config/ia16/ia16.ld
+	cp $< $@
+
+ia16-com.ld: $(srcdir)/config/ia16/ia16-com.ld
+	cp $< $@
