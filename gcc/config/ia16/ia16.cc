@@ -688,27 +688,50 @@ ia16_addr_space_size_type (addr_space_t as)
 #undef  TARGET_ADDR_SPACE_SIZE_TYPE
 #define TARGET_ADDR_SPACE_SIZE_TYPE ia16_addr_space_size_type
 
-/* Plain far pointers keep a raw segment:offset representation, so arithmetic
-   only updates the offset word and never propagates carry into the segment.
-   Huge pointers stay on the generic linear SImode path.  */
+/* Plain far pointers keep a raw segment:offset representation.  Arithmetic
+   only updates or subtracts the offset word and never propagates carry or
+   borrow across the segment.  Huge pointers stay on the generic linear
+   SImode path.  */
 static rtx
-ia16_addr_space_pointer_plus (rtx ptr, rtx offset,
-			      machine_mode mode, addr_space_t as)
+ia16_addr_space_pointer_op (enum tree_code code, rtx op0, rtx op1,
+			    machine_mode mode, addr_space_t as)
 {
   if (as != ADDR_SPACE_FAR || mode != SImode)
     return NULL_RTX;
 
-  rtx result = gen_reg_rtx (SImode);
-  rtx truncated_offset = gen_lowpart (HImode, force_reg (SImode, offset));
-  rtx low = ia16_split_si_half (result, 0);
+  switch (code)
+    {
+    case POINTER_PLUS_EXPR:
+      {
+        rtx result = gen_reg_rtx (SImode);
+        rtx truncated_offset = gen_lowpart (HImode, force_reg (SImode, op1));
+        rtx low = ia16_split_si_half (result, 0);
 
-  emit_move_insn (result, ptr);
-  emit_insn (gen_addhi3 (low, low, truncated_offset));
-  return result;
+        emit_move_insn (result, op0);
+        emit_insn (gen_addhi3 (low, low, truncated_offset));
+        return result;
+      }
+
+    case POINTER_DIFF_EXPR:
+      {
+        rtx reg0 = force_reg (SImode, op0);
+        rtx reg1 = force_reg (SImode, op1);
+        rtx diff = gen_reg_rtx (HImode);
+        rtx result = gen_reg_rtx (SImode);
+
+        emit_move_insn (diff, ia16_split_si_half (reg0, 0));
+        emit_insn (gen_subhi3 (diff, diff, ia16_split_si_half (reg1, 0)));
+        emit_insn (gen_extendhisi2 (result, diff));
+        return result;
+      }
+
+    default:
+      return NULL_RTX;
+    }
 }
 
-#undef  TARGET_ADDR_SPACE_POINTER_PLUS
-#define TARGET_ADDR_SPACE_POINTER_PLUS ia16_addr_space_pointer_plus
+#undef  TARGET_ADDR_SPACE_POINTER_OP
+#define TARGET_ADDR_SPACE_POINTER_OP ia16_addr_space_pointer_op
 
 /* Return true if OP is a symbolic constant that can use the target-specific
    segmented-pointer handling.  */
