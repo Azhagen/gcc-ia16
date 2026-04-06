@@ -5627,6 +5627,20 @@ cxx_init_decl_processing (void)
 				   CP_BUILT_IN_EH_PTR_ADJUST_REF,
 				   BUILT_IN_FRONTEND, NULL, NULL_TREE);
       set_call_expr_flags (decl, ECF_NOTHROW | ECF_LEAF);
+
+      /* Similar case to __builtin_source_location above.  The concrete
+	 return type is std::exception_ptr, but we can't form the type
+	 at this point, so it is deduced later.  */
+      decl = add_builtin_function ("__builtin_current_exception",
+				   auto_ftype, CP_BUILT_IN_CURRENT_EXCEPTION,
+				   BUILT_IN_FRONTEND, NULL, NULL_TREE);
+      set_call_expr_flags (decl, ECF_NOTHROW | ECF_LEAF);
+
+      tree int_ftype = build_function_type_list (integer_type_node, NULL_TREE);
+      decl = add_builtin_function ("__builtin_uncaught_exceptions",
+				   int_ftype, CP_BUILT_IN_UNCAUGHT_EXCEPTIONS,
+				   BUILT_IN_FRONTEND, NULL, NULL_TREE);
+      set_call_expr_flags (decl, ECF_PURE | ECF_NOTHROW | ECF_LEAF);
     }
 
   decl
@@ -19076,7 +19090,7 @@ finish_enum_value_list (tree enumtype)
 
 	  /* Update the minimum and maximum values, if appropriate.  */
 	  value = DECL_INITIAL (decl);
-	  if (TREE_CODE (value) != INTEGER_CST)
+	  if (!value || TREE_CODE (value) != INTEGER_CST)
 	    value = integer_zero_node;
 	  /* Figure out what the minimum and maximum values of the
 	     enumerators are.  */
@@ -19229,6 +19243,8 @@ finish_enum_value_list (tree enumtype)
         value = perform_implicit_conversion (underlying_type,
                                              DECL_INITIAL (decl),
                                              tf_warning_or_error);
+      if (!value)
+	value = integer_zero_node;
       /* Do not clobber shared ints.  But do share identical enumerators.  */
       value = fold_convert (enumtype, value);
 
@@ -21256,8 +21272,8 @@ require_deduced_type (tree decl, tsubst_flags_t complain)
   if (undeduced_auto_decl (decl))
     {
       if (TREE_CODE (decl) == FUNCTION_DECL
-	  && fndecl_built_in_p (decl, BUILT_IN_FRONTEND)
-	  && DECL_FE_FUNCTION_CODE (decl) == CP_BUILT_IN_SOURCE_LOCATION)
+	  && fndecl_built_in_p (decl, CP_BUILT_IN_SOURCE_LOCATION,
+				BUILT_IN_FRONTEND))
 	{
 	  /* Set the return type of __builtin_source_location.  */
 	  tree type = get_source_location_impl_type ();
@@ -21269,6 +21285,33 @@ require_deduced_type (tree decl, tsubst_flags_t complain)
 	  type = cp_build_qualified_type (type, TYPE_QUAL_CONST);
 	  type = build_pointer_type (type);
 	  apply_deduced_return_type (decl, type);
+	  return true;
+	}
+
+      if (TREE_CODE (decl) == FUNCTION_DECL
+	  && fndecl_built_in_p (decl, CP_BUILT_IN_CURRENT_EXCEPTION,
+				BUILT_IN_FRONTEND))
+	{
+	  /* Set the return type of __builtin_current_exception.  */
+	  tree name = get_identifier ("exception_ptr");
+	  tree eptr = lookup_qualified_name (std_node, name);
+	  tree fld;
+	  if (TREE_CODE (eptr) != TYPE_DECL
+	      || !CLASS_TYPE_P (TREE_TYPE (eptr))
+	      || !COMPLETE_TYPE_P (TREE_TYPE (eptr))
+	      || !(fld = next_aggregate_field (TYPE_FIELDS (TREE_TYPE (eptr))))
+	      || DECL_ARTIFICIAL (fld)
+	      || TREE_CODE (TREE_TYPE (fld)) != POINTER_TYPE
+	      || next_aggregate_field (DECL_CHAIN (fld))
+	      || !tree_int_cst_equal (TYPE_SIZE (TREE_TYPE (eptr)),
+				      TYPE_SIZE (TREE_TYPE (fld))))
+	    {
+	      error ("%qs used without %qs declaration",
+		     "__builtin_current_exception", "std::exception_ptr");
+	      return false;
+	    }
+
+	  apply_deduced_return_type (decl, TREE_TYPE (eptr));
 	  return true;
 	}
 

@@ -1,3 +1,175 @@
+2026-04-05  Jakub Jelinek  <jakub@redhat.com>
+
+	PR c++/124689
+	* g++.dg/reflect/pr124689.C: New test.
+
+2026-04-05  Christopher Albert  <albert@tugraz.at>
+
+	PR fortran/109788
+	* gfortran.dg/pr109788.f90: New test.
+
+2026-04-05  Eric Botcazou  <ebotcazou@adacore.com>
+
+	* gnat.dg/aggr35_pkg.adb: Pass -gnatws.
+
+2026-04-05  Eric Botcazou  <ebotcazou@adacore.com>
+
+	* gnat.dg/aggr35.adb: New test.
+	* gnat.dg/aggr35_pkg.ads, gnat.dg/aggr35_pkg.adb: New helper.
+
+2026-04-04  Roger Sayle  <roger@nextmovesoftware.com>
+
+	PR c++/124573
+	* g++.dg/other/enum4.C: New test case.
+
+2026-04-04  Jakub Jelinek  <jakub@redhat.com>
+
+	* g++.dg/cpp26/expansion-stmt34.C: New test.
+
+2026-04-04  Jakub Jelinek  <jakub@redhat.com>
+
+	PR c++/124487
+	* g++.dg/cpp26/pack-indexing7.C: Don't xfail dg-bogus.
+	* g++.dg/cpp26/pack-indexing22.C: New test.
+
+2026-04-04  Jakub Jelinek  <jakub@redhat.com>
+
+	PR c++/124198
+	* g++.dg/cpp26/pack-indexing2.C (getT2, badtype4): Expect different
+	diagnostics.
+	* g++.dg/cpp26/pack-indexing20.C: New test.
+	* g++.dg/cpp26/pack-indexing21.C: New test.
+
+2026-04-04  Harald Anlauf  <anlauf@gmx.de>
+
+	PR fortran/66973
+	* gfortran.dg/generic_36-1.f90: New test.
+	* gfortran.dg/generic_36-2.f90: New test.
+
+2026-04-04  Jerry DeLisle  <jvdelisle@gcc.gnu.org>
+
+	PR libfortran/124543
+	* gfortran.dg/pr124543.f90: Set result to 'UNDEFINED' in two
+	places.
+
+2026-04-03  H.J. Lu  <hjl.tools@gmail.com>
+
+	PR target/123210
+	* gcc.target/i386/pr123210.c: New test.
+
+2026-04-03  Jakub Jelinek  <jakub@redhat.com>
+
+	PR tree-optimization/124754
+	* g++.dg/tree-ssa/strlenopt-3.C: New test.
+
+2026-04-03  Jakub Jelinek  <jakub@redhat.com>
+
+	* g++.dg/reflect/type_trait14.C: New test.
+	* g++.dg/reflect/eh1.C: Add test for is_structural_type.
+	* g++.dg/reflect/eh2.C: Likewise.
+
+2026-04-03  Jakub Jelinek  <jakub@redhat.com>
+
+	* g++.dg/cpp26/constexpr-eh3.C: Use __builtin_current_exception()
+	instead of std::current_exception() and
+	__builttin_uncaught_exceptions() instead of
+	std::uncaught_exceptions().  Remove nested_exception related parts
+	of the test.
+	* g++.dg/cpp26/constexpr-eh8.C: Use __builtin_current_exception()
+	instead of std::current_exception().
+
+2026-04-03  Harald Anlauf  <anlauf@gmx.de>
+
+	PR fortran/124652
+	* gfortran.dg/c_funloc_tests_10.f90: New test.
+
+2026-04-03  Christopher Albert  <albert@tugraz.at>
+
+	PR fortran/98203
+	PR fortran/98203
+	* gfortran.dg/gomp/pr98203.f90: New test.
+
+2026-04-03  Jakub Jelinek  <jakub@redhat.com>
+
+	* g++.dg/reflect/data_member_spec2.C: Add tests for unnamed bit-fields
+	with const and/or volatile types.
+
+2026-04-03  Jakub Jelinek  <jakub@redhat.com>
+
+	* g++.dg/reflect/define_aggregate10.C: New test.
+
+2026-04-03  Jakub Jelinek  <jakub@redhat.com>
+
+	* g++.dg/reflect/lwg4556.C: New test.
+
+2026-04-03  Jakub Jelinek  <jakub@redhat.com>
+
+	PR c++/124531
+	* g++.dg/cpp/embed-29.C: New test.
+	* g++.dg/cpp0x/pr124531.C: New test.
+
+2026-04-03  Christopher Albert  <albert@tugraz.at>
+
+	PR fortran/95163
+	PR fortran/95163
+	* gfortran.dg/gomp/pr95163.f90: New test.
+
+2026-04-03  Paul Thomas  <pault@gcc.gnu.org>
+
+	PR fortran/100155
+	* gfortran.dg/pr100155.f90: New test.
+
+2026-04-02  Nathaniel Shead  <nathanieloshead@gmail.com>
+
+	PR c++/124477
+	* g++.dg/modules/builtin-10_a.C: New test.
+	* g++.dg/modules/builtin-10_b.C: New test.
+
+2026-04-02  Andrew Pinski  <andrew.pinski@oss.qualcomm.com>
+
+	PR testsuite/124548
+	* g++.dg/coroutines/torture/func-params-07.C (main): Fix lifetime
+	issue of rvalue reference.
+
+2026-04-02  Marek Polacek  <polacek@redhat.com>
+
+	PR c++/124646
+	PR c++/124645
+	* g++.dg/reflect/members_of11.C: New test.
+	* g++.dg/reflect/members_of12.C: New test.
+
+2026-04-02  Andrew Pinski  <andrew.pinski@oss.qualcomm.com>
+
+	PR tree-optimization/124746
+	* gcc.dg/tree-ssa/pr124746-1.c: New test.
+
+2026-04-02  Uros Bizjak  <ubizjak@gmail.com>
+
+	* gcc.target/i386/pr124696.c: Compile only for int128 targets.
+	(dg-options): Use -Wno-psabi instead of -w
+
+2026-04-02  Christophe Lyon  <christophe.lyon@arm.com>
+
+	PR target/124705
+	* gcc.dg/tree-ssa/gen-vect-26.c: Disable loop peeling check for
+	arm*-*-.
+	* gcc.dg/tree-ssa/gen-vect-28.c: Likewise.
+
+2026-04-02  Lulu Cheng  <chenglulu@loongson.cn>
+
+	* gcc.target/loongarch/attr-check-error-message8.c: Removed.
+	* gcc.target/loongarch/attr-check-error-message9.c: Removed.
+	* gcc.target/loongarch/attr-check-warning-message1.c: New test.
+	* gcc.target/loongarch/attr-check-warning-message2.c: New test.
+	* gcc.target/loongarch/attr-check-warning-message3.c: New test.
+
+2026-04-02  Christopher Albert  <albert@tugraz.at>
+	    Paul Thomas  <pault@gcc.gnu.org>
+
+	PR fortran/124751
+	* gfortran.dg/pr100194.f90: Run the testcase and add runtime
+	coverage for packed assumed-rank sections.
+
 2026-04-01  Jerry DeLisle  <jvdelisle@gcc.gnu.org>
 
 	PR fortran/124739
