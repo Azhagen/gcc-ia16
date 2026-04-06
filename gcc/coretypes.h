@@ -101,6 +101,7 @@ typedef gimple *gimple_seq;
 struct gimple_stmt_iterator;
 class code_helper;
 enum tree_index : unsigned;
+enum tree_code : unsigned;
 
 /* Forward declare rtx_code, so that we can use it in target hooks without
    needing to pull in rtl.h.  */
